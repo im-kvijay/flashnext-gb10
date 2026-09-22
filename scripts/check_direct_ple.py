@@ -45,6 +45,18 @@ with tempfile.TemporaryDirectory() as directory:
         pass
     else:
         raise AssertionError('Heap source accepted')
+    # The real checkpoint places many tensors in one file. Advice for the
+    # first tensor splits its VMA inside the following tensor's first page.
+    adjacent_path=Path(directory)/'adjacent.safetensors'
+    save_file({'a':source,'b':source.flip(0)},adjacent_path)
+    adjacent=CheckpointShards(160,source.dtype,directory)
+    with safe_open(adjacent_path,framework='pt',device='cpu') as reader:
+        adjacent.add(0,reader.get_tensor('a'))
+        adjacent.add(128,reader.get_tensor('b'))
+    adjacent_ids=torch.arange(256,dtype=torch.int64)
+    adjacent_output=torch.empty(256,160,dtype=torch.uint8)
+    adjacent.gather_into(adjacent_ids,adjacent_output,256)
+    assert torch.equal(adjacent_output,torch.cat([source,source.flip(0)]).view(torch.uint8))
     # Mock only distributed rank metadata; exercise the real parameter class.
     with patch('vllm.model_executor.parameter.get_tensor_model_parallel_rank',return_value=0), \
          patch('vllm.model_executor.parameter.get_tensor_model_parallel_world_size',return_value=1):
@@ -52,5 +64,5 @@ with tempfile.TemporaryDirectory() as directory:
             input_dim=1,output_dim=0,weight_loader=lambda *args:None)
     assert parameter.untyped_storage().nbytes()==1
     print(json.dumps({'passed':True,'all_byte_patterns':True,'threads':[1,4],
-        'reader_lifetime':True,'gap_overlap_heap_refused':True,
+        'reader_lifetime':True,'gap_overlap_heap_refused':True,'split_vma_same_file':True,
         'real_parameter_class_with_mocked_tp_metadata':True,'parameter_storage_bytes':1}))

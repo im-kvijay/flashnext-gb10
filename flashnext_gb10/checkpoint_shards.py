@@ -15,14 +15,31 @@ import torch
 def _mapped_file_region(tensor):
     first = tensor.data_ptr()
     last = first + tensor.numel() * tensor.element_size()
+    cursor = first
+    identity = None
+    file_delta = None
     for line in Path('/proc/self/maps').read_text().splitlines():
         fields = line.split(maxsplit=5)
         lo,hi = (int(x,16) for x in fields[0].split('-'))
-        if lo <= first < hi:
-            if last > hi or len(fields)!=6 or not fields[5].endswith('.safetensors'):
-                raise ValueError('PLE source must be entirely inside a live safetensors file mapping')
-            if 'r' not in fields[1]:
-                raise ValueError('PLE source mapping is not readable')
+        if hi <= cursor:
+            continue
+        if lo > cursor:
+            break
+        if len(fields)!=6 or not fields[5].endswith('.safetensors') or fields[4]=='0':
+            raise ValueError('PLE source must be entirely inside a live safetensors file mapping')
+        if 'r' not in fields[1]:
+            raise ValueError('PLE source mapping is not readable')
+        # MADV_RANDOM can split a file's VMA at page boundaries. A following
+        # tensor may start in the last advised page and continue in the next
+        # VMA. Require contiguous bytes of the same file, not a single VMA.
+        current_identity = (fields[3],fields[4],fields[5])
+        current_delta = int(fields[2],16)-lo
+        if identity is None:
+            identity,file_delta = current_identity,current_delta
+        elif current_identity!=identity or current_delta!=file_delta:
+            raise ValueError('PLE source crosses unrelated file mappings')
+        cursor=min(hi,last)
+        if cursor==last:
             return first,last
     raise ValueError('PLE source is not file-backed; eager checkpoint loading is unsupported')
 
