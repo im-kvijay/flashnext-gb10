@@ -5,7 +5,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 RUNTIME=${FLASHNEXT_RUNTIME:-$ROOT/.venv}
 DATA=${FLASHNEXT_DATA:-$ROOT/data}
 python3 -m venv "$RUNTIME"
-"$RUNTIME/bin/python" -m pip install uv
+"$RUNTIME/bin/python" -m pip install uv==0.12.17
 "$RUNTIME/bin/uv" pip install --python "$RUNTIME/bin/python" \
   --index-strategy unsafe-best-match \
   --extra-index-url https://download.pytorch.org/whl/cu130 \

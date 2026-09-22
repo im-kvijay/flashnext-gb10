@@ -17,6 +17,26 @@ import aiohttp
 from transformers import AutoTokenizer
 
 
+async def engine_counters(session, url):
+    wanted = {'vllm:num_preemptions_total', 'vllm:prefix_cache_queries_total',
+              'vllm:prefix_cache_hits_total', 'vllm:prompt_tokens_total',
+              'vllm:generation_tokens_total'}
+    try:
+        async with session.get(url+'/metrics',timeout=aiohttp.ClientTimeout(total=10)) as response:
+            response.raise_for_status()
+            body = await response.text()
+        counters = {}
+        for line in body.splitlines():
+            if not line or line.startswith('#'):
+                continue
+            name = line.split('{',1)[0].split(' ',1)[0]
+            if name in wanted:
+                counters[name] = counters.get(name,0) + float(line.rsplit(' ',1)[1])
+        return {'counters':counters,'error':None}
+    except Exception as exc:
+        return {'counters':{},'error':str(exc)}
+
+
 def make_prompt(tokenizer, count, agent, mode="retrieval"):
     rng = random.Random(7919 + agent)
     secret = f"{rng.randrange(10**9, 10**10)}"
@@ -138,9 +158,11 @@ async def main(args):
                 priming.append(row)
                 if row['error']:
                     raise RuntimeError(f'prefix priming failed for agent {i}: {row["error"]}')
+        counters_before = await engine_counters(session,args.url)
         tasks = [asyncio.create_task(run_one(session,args.url,i,p,s,args,barrier)) for i,(p,s) in enumerate(prompts)]
         barrier.set()
         results = await asyncio.gather(*tasks)
+        counters_after = await engine_counters(session,args.url)
     wall = max(r['end'] for r in results) - min(r['start'] for r in results)
     successful_tokens = sum((r['usage'] or {}).get('completion_tokens',0) for r in results if not r['error'])
     events = []
@@ -174,7 +196,11 @@ async def main(args):
                'retrieval_correct':sum(r['retrieval_correct'] for r in results),
                'release_qualified':False}
     Path(args.output).parent.mkdir(parents=True,exist_ok=True)
-    Path(args.output).write_text(json.dumps({'summary':summary,'requests':results,'priming':priming},indent=2))
+    deltas = {k:v-counters_before['counters'][k] for k,v in counters_after['counters'].items()
+              if k in counters_before['counters']}
+    Path(args.output).write_text(json.dumps({'summary':summary,'requests':results,'priming':priming,
+        'engine_counters_before':counters_before,'engine_counters_after':counters_after,
+        'engine_counter_deltas':deltas},indent=2))
     print(json.dumps(summary,indent=2))
     return 1 if summary['errors'] else 0
 

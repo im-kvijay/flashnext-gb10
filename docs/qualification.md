@@ -75,3 +75,18 @@ with eight rows each, matching the corresponding subset of full-head logits.
 Full-model throughput and retention for this optimization remain unmeasured.
 The text-only candidate omits the vision encoder and does not support image or
 video inputs; this tradeoff must remain explicit if it becomes a release option.
+
+The text-only/FP8-KV/reduced-draft candidate at memory fraction 0.88 passed 8/8
+short retrievals and reached 167.924 tokens/s in the all-stream synthetic decode
+interval. It reported 28.78 GiB KV and 1,650,688 tokens. During its 200k screen,
+SSH stopped responding and Vast reported the host offline. The last available
+memory reading was about 5.4 GiB. Memory pressure is suspected, not confirmed;
+no final long-screen receipt or kernel diagnosis was retrieved. A Vast container
+reboot was requested. This is a reliability failure, not a qualified capacity win.
+
+The default memory fraction is reduced to 0.80 pending further measurement.
+`scripts/supervise.py` records MemAvailable every second and terminates only its
+own service process group after a sustained breach of the 8 GiB floor. Use it
+for subsequent hardware experiments. The floor is a guard, not proof against
+driver or provider failures. Packed PLE state and wider verification graphs are
+staged but have not yet been measured in a full-model run.
