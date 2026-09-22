@@ -89,8 +89,31 @@ sign of the NLL change differing between sequences. Raw code inside a user
 turn is high-entropy for this model (median 0.59 but 75th percentile 4.4
 nats/token, frequent end-of-turn predictions), which amplifies any numeric
 change; sparse-attention top-k selection also turns small differences into
-discrete ones. A same-configuration repeat (`noise-baseline-fidelity`) sets
-the noise floor before this is interpreted.
+discrete ones. The BF16-weight full-graph stack below (BF16 SSM state, MTP-3,
+full graphs) scores 83.0% codebase top-1 against the same baseline, so the
+codebase metric is dominated by run-to-run and state-precision noise; the
+workload metric separates configurations better (95.1% versus FP8's 94.3%).
+
+Rejected on the coding suite. LiveCodeBench v6 (30 problems, 16k token cap)
+fell from 36.7% to 23.3%: four problems lost, none gained. All four were solved
+by the baseline in 11-13k tokens and hit the length cap under FP8
+(length-limited answers 18 -> 23 of 30), so FP8 dense makes reasoning longer
+rather than visibly wrong. HumanEval (92.5%) and GSM8K (100%) were unchanged
+and MMLU-Pro moved 78.6% -> 82.1% (within noise for 28 questions). This matches
+the earlier observation that FP8 lm_head degraded Qwen3.8-27B. Weight-only FP8
+(W8A16) is untested.
+
+## Full-graph stack (lossless apart from BF16 SSM state)
+
+`s2-full-bf16`: BF16 dense weights, MTP-3 with the MTP index shared across
+draft iterations, BF16 Mamba/GDN SSM state, `FULL_AND_PIECEWISE` CUDA graphs
+with pre-forward PLE, buffered pread PLE. 171.63 tok/s short retrieval, 160.51
+fixed-output stress, 104.52 / 109.07 natural coding workload (acceptance
+0.455, mean accepted length 2.37 versus 2.18 at MTP-2). That is about +28%
+retrieval, +17% stress and +7% coding over the baseline. Coding gains least
+because its lower acceptance makes the third draft position mostly wasted and
+its more diverse n-grams make the now-serialized PLE gather colder. Fidelity
+against the baseline: workload top-1 95.1%, KL 0.015, NLL +0.001 nats/token.
 
 ## Weight-only NVFP4 dense (numerics change)
 
