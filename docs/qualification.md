@@ -201,12 +201,14 @@ with 16-thread O_DIRECT pread in one idle-disk test; later idle-disk repeats wer
 noisy (26-35 ms buffered/direct). The pread backend (`FLASHNEXT_PLE_IO`,
 buffered by default) is byte-identical to mapped reads on all 128 real shards.
 
-Serving run `pleio-buffered-mtp2` (PIECEWISE graphs, async PLE IDs, otherwise
-the `cheaper-direct-mtp2` configuration): 8/8 retrievals, 134.4 tok/s all-stream
-overlap; fixed-output stress 137.6 (baseline 134.3); natural coding workload
-92.6 and 103.2 unprofiled (the baseline's 93.0 was profiled). Mean accepted
-length 2.1-2.2 on coding, 2.6 on retrieval. The expected ~17% gain did not
-appear, so the profiled gap was not mainly PLE I/O; its cause remains open.
+Serving runs `pleio-buffered-mtp2` and `pleio-fp8dense-mtp2` are invalid tests
+of these changes: the runtime's editable install imports the older
+`/workspace/flashnext-gb10` checkout, which contains neither the pread backend
+nor the dense-FP8 hook (the FP8 run's profile shows only BF16 dense GEMMs).
+Their numbers restate the old configuration: 8/8 retrievals, stress
+136.8-137.6 tok/s all-stream overlap, natural coding 92.6-103.2, mean accepted
+length 2.1-2.2 on coding and 2.6 on retrieval. The launcher now puts the
+current checkout first on PYTHONPATH.
 
 A FULL_AND_PIECEWISE graph attempt failed at capture: the PLE prefetch uses an
 eager CUDA-graph break that whole-step capture cannot contain.
