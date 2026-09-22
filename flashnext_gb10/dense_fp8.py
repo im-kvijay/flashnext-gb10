@@ -23,7 +23,7 @@ def register_dense_fp8():
 
     if getattr(ModelOptMixedPrecisionConfig, '_flashnext_dense_fp8', False):
         return
-    logger = init_logger(__name__)
+    logger = init_logger('vllm.flashnext.dense_fp8')
     original = ModelOptMixedPrecisionConfig.get_quant_method
 
     def get_quant_method(self, layer, prefix):
