@@ -191,3 +191,22 @@ and return only their own verification code. It verifies server-reported input
 usage against the requested context floor and requires a normal final stop.
 Prompt preparation passed for eight 4k contexts and two 200k contexts; generated
 tool calls and continuations remain to be tested against the running model.
+
+## September 22 afternoon: parallel PLE reads (negative result)
+
+The profiled MTP-2 trace showed one 21-34 ms GPU gap per step that ended with
+the PLE staging copy, so the CPU gather was suspected. Cold-cache gathers of a
+step's 384 rows took about 103 ms with the mapped four-thread path and about 5 ms
+with 16-thread O_DIRECT pread in one idle-disk test; later idle-disk repeats were
+noisy (26-35 ms buffered/direct). The pread backend (`FLASHNEXT_PLE_IO`,
+buffered by default) is byte-identical to mapped reads on all 128 real shards.
+
+Serving run `pleio-buffered-mtp2` (PIECEWISE graphs, async PLE IDs, otherwise
+the `cheaper-direct-mtp2` configuration): 8/8 retrievals, 134.4 tok/s all-stream
+overlap; fixed-output stress 137.6 (baseline 134.3); natural coding workload
+92.6 and 103.2 unprofiled (the baseline's 93.0 was profiled). Mean accepted
+length 2.1-2.2 on coding, 2.6 on retrieval. The expected ~17% gain did not
+appear, so the profiled gap was not mainly PLE I/O; its cause remains open.
+
+A FULL_AND_PIECEWISE graph attempt failed at capture: the PLE prefetch uses an
+eager CUDA-graph break that whole-step capture cannot contain.
