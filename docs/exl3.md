@@ -34,6 +34,10 @@ The fork defaults to `EXL3_GR_INT8=1`, which changes target hyperconnection
 precision, and `EXL3_MTP_HEAD_N=65536`, which prunes the draft vocabulary. Set
 both to `0` for the first fidelity comparison. Its MTP source calls the stream
 tap a semantic guess, so acceptance and verification need direct testing.
+The fork also defaults to `EXL3_INT8_GEMV=2`, rounding activations to int8 in
+eligible projection kernels. The native benchmark defaults this to `0` and
+records the setting; an explicit environment override enables a separate speed
+comparison. Mode `1` includes a residual correction, while mode `2` does not.
 
 The [published GB10 recipe](https://github.com/vcruz305/Qwen3.8-Flash-Next-EXL3-DGX-Spark-recipe/blob/e0ebee8ddc4391b5e66d86fdce993b0756e00986/README.md)
 reports about 152 aggregate tokens/s for eight short streams and 135.8 for
@@ -55,3 +59,5 @@ It checks tokenizer agreement and reserves cache for all requests. Run it under
 `scripts/supervise.py --receipt <new-file> --command <python> bench/exl3_native.py ...`.
 This native screen bypasses HTTP and tool parsing and is not API qualification.
 The harness is staged; it has not yet run against the full EXL3 checkpoint.
+Use `--prepare-only` to validate full prompt tokenizer agreement, stop tokens,
+and cache sizing before allocating model weights or cache on the GPU.

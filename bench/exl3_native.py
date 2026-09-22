@@ -14,6 +14,9 @@ import time
 os.environ["EXL3_GR_INT8"] = "0"
 os.environ["EXL3_MTP_HEAD_N"] = "0"
 os.environ["EXL3_NGRAM_STREAM"] = "1"
+# The fork otherwise enables additional int8 activation rounding by default.
+# Separate speed arms may opt in explicitly; record that choice in every receipt.
+os.environ.setdefault("EXL3_INT8_GEMV", "0")
 
 import torch
 from transformers import AutoTokenizer
@@ -35,7 +38,6 @@ def main(a):
     start_load = time.monotonic()
     config = Config.from_directory(a.model)
     config.infer_params.ngram_stream_from_disk = True
-    model = Model.from_config(config)
     tokenizer = Tokenizer.from_config(config)
     # Check native and HF token identities on the actual full prompts before loading.
     for ids, _ in prompts:
@@ -43,6 +45,16 @@ def main(a):
         native = tokenizer.encode(text, encode_special_tokens=True).flatten().tolist()
         if native != hf.encode(text, add_special_tokens=False):
             raise ValueError("EXL3 and official tokenizer disagree")
+    stops = set(config.eos_token_id_list)
+    if not stops:
+        raise ValueError("Missing EOS token IDs")
+    if a.prepare_only:
+        print(json.dumps({"status": "prepared_no_inference", "prompts": len(prompts),
+                          "input_tokens_each": a.input_tokens,
+                          "required_cache_tokens": required, "stop_ids": sorted(stops),
+                          "int8_gemv": os.environ["EXL3_INT8_GEMV"]}, indent=2))
+        return
+    model = Model.from_config(config)
     cache = Cache(model, max_num_tokens=a.cache_tokens, layer_type=CacheLayer_quant,
                   k_bits=8, v_bits=8, max_batch_size=a.concurrency, max_history=a.mtp)
     draft = draft_cache = None
@@ -57,9 +69,6 @@ def main(a):
         max_chunk_size=a.prefill, draft_model=draft, draft_cache=draft_cache,
         num_draft_tokens=a.mtp, recurrent_cache_size=a.recurrent_cache_gib * 1024**3)
     loaded_seconds = time.monotonic() - start_load
-    stops = set(config.eos_token_id_list)
-    if not stops:
-        raise ValueError("Missing EOS token IDs")
     jobs = []
     rows = []
     for i, (ids, expected) in enumerate(prompts):
@@ -103,6 +112,7 @@ def main(a):
     tokens = sum(n for row in rows for t, n in row["token_events"] if overlap_start < t <= overlap_end)
     summary = dict(engine="exl3_native", mode=a.mode, concurrency=a.concurrency,
         input_tokens_each=a.input_tokens, mtp=a.mtp, load_seconds=loaded_seconds,
+        int8_gemv=os.environ["EXL3_INT8_GEMV"], hc_int8=False, draft_vocabulary_pruned=False,
         wall_seconds=elapsed, all_streams_overlap_seconds=overlap,
         all_streams_overlap_output_tokens=tokens,
         all_streams_overlap_output_tps=tokens / overlap if overlap else None,
@@ -127,4 +137,10 @@ if __name__ == "__main__":
     p.add_argument("--recurrent-cache-gib", type=int, default=4)
     p.add_argument("--mtp", type=int, choices=(0, 1, 2, 3), default=0)
     p.add_argument("--mode", choices=("retrieval", "workload"), default="retrieval")
-    main(p.parse_args())
+    p.add_argument("--prepare-only", action="store_true")
+    args = p.parse_args()
+    if min(args.input_tokens, args.output_tokens, args.concurrency, args.cache_tokens, args.prefill) <= 0:
+        p.error("Token counts and concurrency must be positive")
+    if args.cache_tokens % 256:
+        p.error("Cache tokens must be a multiple of the 256-token page size")
+    main(args)
