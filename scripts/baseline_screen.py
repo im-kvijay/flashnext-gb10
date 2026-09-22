@@ -11,6 +11,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--model', required=True)
 p.add_argument('--output-dir', required=True)
 p.add_argument('--ready-timeout', type=int, default=1200)
+p.add_argument('--profile-before-long', action='store_true', help='Run natural-workload profile and procedural screen before the 200k probe')
 a = p.parse_args()
 deadline = time.monotonic() + a.ready_timeout
 while True:
@@ -31,6 +32,13 @@ for name, concurrency, tokens, output, mode in [
     ('throughput-c8-4k', 8, 4096, 256, 'performance'),
     ('retrieval-c1-200k', 1, 200000, 2048, 'retrieval'),
 ]:
+    if name == 'retrieval-c1-200k' and a.profile_before_long:
+        for script,extra in [
+            ('scripts/profile_decode.py', ['--output',str(out/'profile-workload-c8-4k.json')]),
+            ('bench/retention.py', ['--label',out.name,'--output',str(out/'retention.json')]),
+        ]:
+            print('RUN',script,flush=True)
+            subprocess.run([sys.executable,str(root/script),'--model',a.model,*extra],check=True)
     cmd = [sys.executable, str(root/'bench/concurrency.py'), '--model', a.model,
            '--concurrency', str(concurrency), '--input-tokens', str(tokens),
            '--output-tokens', str(output), '--mode', mode, '--output', str(out/(name+'.json'))]
