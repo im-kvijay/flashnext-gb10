@@ -24,6 +24,9 @@ def register():
     if os.environ.get("FLASHNEXT_DIAGNOSTICS_DIR"):
         from .diagnostics import register_diagnostics
         register_diagnostics(os.environ["FLASHNEXT_DIAGNOSTICS_DIR"])
+    if os.environ.get("FLASHNEXT_DENSE_FP8") == "1":
+        from .dense_fp8 import register_dense_fp8
+        register_dense_fp8()
     if os.environ.get("FLASHNEXT_PACK_PLE_STATE") == "1":
         from .cache_packing import register_cache_packing
         register_cache_packing()
