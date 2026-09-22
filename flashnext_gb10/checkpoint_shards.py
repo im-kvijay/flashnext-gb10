@@ -141,6 +141,10 @@ class CheckpointShards:
                 self._fds={}
                 self.direct_io=False
                 self.io_mode='mapped'
+        from vllm.logger import init_logger
+        init_logger('vllm.flashnext.ple').info(
+            'FlashNext direct PLE lookup: io_mode=%s io_threads=%d parts=%d',
+            self.io_mode, self.io_threads, n)
         if self.direct_io:
             self._fd_array=(ctypes.c_int*n)(*(self._fds[p[3]] for p in ordered))
             self._bases=(ctypes.c_int64*n)(*(p[4] for p in ordered))
