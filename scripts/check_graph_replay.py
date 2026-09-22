@@ -5,6 +5,7 @@ table. Lookup, staging, prefetch, finalization and graph decorators are producti
 code; expected values come from direct GPU indexing of the resident source.
 """
 import logging
+import argparse
 import os
 os.environ["VLLM_USE_BREAKABLE_CUDAGRAPH"] = "1"
 import tempfile
@@ -14,6 +15,11 @@ import torch
 from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphCapture
 from vllm.models.qwen4_exp.nvidia.ngram_embedding import Qwen4ExpPLEPinnedHostEmbedding
 from flashnext_gb10.vllm_nvme import make_nvme_embedding
+
+p=argparse.ArgumentParser()
+p.add_argument('--direct',action='store_true')
+a=p.parse_args()
+os.environ['FLASHNEXT_PLE_DIRECT']='1' if a.direct else '0'
 
 
 class Constructor(torch.nn.Module):
@@ -39,7 +45,27 @@ with tempfile.TemporaryDirectory() as d:
     layer = cls(8192, 160, params_dtype=torch.bfloat16, padding_size=128,
                 prefix="test", embedding_method=None, num_ngram_heads=16, max_total_tokens=8)
     source = torch.randn(8192, 160, device="cpu").to(torch.float8_e4m3fn)
-    layer.weight_loader(layer.weight, source)
+    if a.direct:
+        from pathlib import Path
+        from safetensors import safe_open
+        from safetensors.torch import save_file
+        cuts=[0,1023,4095,8192]
+        for i in (2,0,1):
+            path=Path(d)/f'part-{i}.safetensors'
+            save_file({'weight':source[cuts[i]:cuts[i+1]]},path)
+            with safe_open(path,framework='pt',device='cpu') as reader:
+                part=reader.get_tensor('weight')
+            layer.weight_loader(layer.weight,part,checkpoint_start=cuts[i])
+        del part,reader
+        assert layer.weight.untyped_storage().nbytes()==1
+        try:
+            layer.state_dict()
+        except RuntimeError as exc:
+            assert 'placeholder' in str(exc)
+        else:
+            raise AssertionError('Placeholder checkpoint export was not refused')
+    else:
+        layer.weight_loader(layer.weight, source)
     resident = source.view(torch.uint8).to("cuda")
     ids = torch.randint(0, 8192, (8, 16), device="cuda")
     hidden = torch.zeros(8, 2560, device="cuda", dtype=torch.bfloat16)
@@ -57,8 +83,11 @@ with tempfile.TemporaryDirectory() as d:
     torch.cuda.current_stream().wait_stream(stream)
     for step in range(32):
         ids.copy_(torch.randint(0, 8192, ids.shape, device="cuda"))
+        ids[0,:8]=torch.tensor([-1,8192,0,1022,1023,4094,4095,8191],device='cuda')
         graph.replay()
         torch.cuda.synchronize()
-        expected = resident[ids].flatten(-2)
+        expected = resident[ids.clamp(0,8191)]
+        expected[(ids<0)|(ids>=8192)]=0
+        expected=expected.flatten(-2)
         assert torch.equal(observable, expected), f"stale or corrupt PLE rows at graph replay {step}"
-    print(f"PASS: 32 distinct CUDA graph replays, 8 agents; {graph.num_eager_breaks} eager boundaries")
+    print(f"PASS: 32 distinct CUDA graph replays, 8 agents; {graph.num_eager_breaks} eager boundaries; direct={a.direct}")

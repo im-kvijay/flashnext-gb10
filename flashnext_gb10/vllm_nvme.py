@@ -5,6 +5,7 @@ state. CUDA graph breaks use upstream's supported eager-break mechanism. The
 table is never pinned or exposed to a GPU kernel; only gathered rows are pinned.
 """
 from concurrent.futures import ThreadPoolExecutor
+import os
 
 import torch
 from vllm.compilation.breakable_cudagraph import eager_break_during_capture
@@ -63,18 +64,36 @@ def make_nvme_embedding(upstream, directory):
                                  self.weight.is_pinned())
 
         def allocate_embedding_weight(self, num_embeddings, embedding_dim, dtype):
+            if os.environ.get('FLASHNEXT_PLE_DIRECT') == '1':
+                from .checkpoint_shards import CheckpointShards
+                self._checkpoint_shards=CheckpointShards(embedding_dim,dtype,directory)
+                # Only shape/dtype metadata is needed here. Lookup reads retained
+                # checkpoint tensors, never this one-element expanded placeholder.
+                return torch.empty(1,dtype=dtype,device='cpu').expand(num_embeddings,embedding_dim)
             size = num_embeddings * embedding_dim * torch.empty((), dtype=dtype, device="cpu").element_size()
             self._mapped_table = MappedTable(directory, size)
             return torch.frombuffer(self._mapped_table.mapping, dtype=dtype).reshape(num_embeddings, embedding_dim)
 
         def weight_loader(self, param, loaded_weight, checkpoint_start=None):
+            if hasattr(self,'_checkpoint_shards') and param is self.weight:
+                self._checkpoint_shards.add(checkpoint_start or 0,loaded_weight)
+                return
             upstream.Qwen4ExpPLEEmbedding.weight_loader(self, param, loaded_weight, checkpoint_start)
             if param.device.type == "cpu" and param.data_ptr() == self.weight.data_ptr():
                 row_bytes = self.embedding_dim * param.element_size()
                 start = checkpoint_start or 0
                 self._mapped_table.flush_rows(start * row_bytes, loaded_weight.shape[0] * row_bytes)
 
+        def _save_to_state_dict(self, destination, prefix, keep_vars):
+            if hasattr(self,'_checkpoint_shards'):
+                raise RuntimeError('Direct PLE cannot export placeholder weights; retain the original verified checkpoint')
+            return super()._save_to_state_dict(destination,prefix,keep_vars)
+
         def _gather(self, ids):
+            if hasattr(self,'_checkpoint_shards'):
+                staging=self._host_staging[:ids.shape[0]].view(torch.uint8)
+                self._checkpoint_shards.gather_into(ids,staging,self.shard_indices.org_vocab_end_index)
+                return staging.view(self.weight.dtype)
             rows = gather_bytes(self.weight, ids,
                                 self.shard_indices.org_vocab_start_index,
                                 self.shard_indices.org_vocab_end_index)

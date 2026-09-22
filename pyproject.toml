@@ -14,3 +14,6 @@ flashnext_nvme = "flashnext_gb10.plugin:register"
 
 [tool.setuptools.packages.find]
 include = ["flashnext_gb10*"]
+
+[tool.setuptools.package-data]
+flashnext_gb10 = ["*.c"]
