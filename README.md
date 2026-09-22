@@ -34,9 +34,15 @@ pinned. The initial implementation reloads the table on each server start.
 
 Experimental `FLASHNEXT_PLE_DIRECT=1` instead reads the existing checkpoint
 mappings, avoiding that extra table file. It requires a C compiler with OpenMP
-and retains exact FP8 bytes. Shard and graph checks pass; full-model validation
-is pending. Checkpoint export from this mode is unsupported: retain the original
+and retains exact FP8 bytes. Shard and graph checks and the eight-agent short
+full-model screen pass; long-context qualification is pending. Checkpoint export
+from this mode is unsupported: retain the original
 verified checkpoint.
+
+Optional `FLASHNEXT_ASYNC_PLE=1` copies n-gram IDs into a preallocated pinned
+buffer and waits in the gather worker, allowing the decoder thread to enqueue
+the first layer. It passed 32 changing direct-PLE graph replays. Its full-model
+performance benefit is not yet measured; it remains off by default.
 
 From the cloned repository on a Linux GB10 with CUDA 13 and Python 3.12:
 

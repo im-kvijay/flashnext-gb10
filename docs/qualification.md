@@ -26,6 +26,41 @@ The tests must establish:
 
 ## Current evidence
 
+The September 22 cheaper-host run (`cheaper-direct-mtp2`) loaded the complete
+NVIDIA target and native MTP head with direct-checkpoint PLE, FP8 KV, packed PLE
+state, a 29,977-token draft-only vocabulary, and all MTP-2 verification graph
+sizes. Loading used 75.54 GiB and took 900.62 seconds; graph capture added
+0.60 GiB. Its explicit 6 GiB cache is a diagnostic budget, reporting 380,723
+tokens or 1.79 requests at 212,992 tokens, not eight long requests.
+
+It passed 8/8 distinct 4k retrievals with natural stops. All-eight overlap
+throughput was 127.24 output tokens/s (47.63 including prefill). The fixed-output
+stress run reached 134.29 during overlap (72.23 including prefill), with 1277 of
+1544 draft tokens accepted. Both had zero preemptions.
+
+The coding-workload run generated 32,768 normal pre-EOS tokens, reaching its
+4096-token output limit on all eight requests. Its profiled all-eight overlap
+rate was 93.02 tokens/s and end-to-end rate 87.23. The bounded profiler perturbs
+timing; this is diagnostic evidence, not a release throughput measurement.
+There were no request errors or preemptions. These truncated outputs do not
+establish completion or correctness of the requested coding tasks. The trace
+showed 81.3% GPU event coverage, with the two routed-expert GEMMs accounting for
+about 38% of the measured interval. Dense projections and GDN updates also
+contribute substantially.
+
+The following retention attempt initially failed in the client because
+Transformers 5 returned `BatchEncoding` from template tokenization. Explicit
+template rendering followed by encoding fixes the client path. The resumed
+screen scored 10/12 with no request errors, consuming 20,225 output tokens in
+241.58 seconds. Both misses were permutation-counting cases that exhausted the
+4096-token output budget, so the original responses and limits are retained.
+The eight-agent tool check passed 8/8 parsed calls and 8/8 correct continuations.
+The cold single-agent 200k retrieval passed with 313 output tokens, 95.05 seconds
+TTFT and 104.01 seconds wall time. None of these proves eight simultaneous 200k
+contexts. Full release qualification remains absent.
+
+## Earlier experiments and failure evidence
+
 The initial implementation passed 32 changing FP8 table lookup batches on GB10,
 with eight rows of agent inputs per batch, duplicate indices and masked indices.
 It also passed 32 CUDA graph replays with changing inputs across eight agents.
@@ -146,8 +181,9 @@ checkpoint shard 1 without loading the model. The fix checks contiguous file
 offsets, device/inode identity, and readable mappings across VMA boundaries.
 All 128 real checkpoint shards then loaded, with exact-byte comparisons for
 256 boundary rows, and the 32 changing CUDA graph replays passed again. A
-same-file adjacent-tensor regression test also passed. Full-model correctness
-and performance of the corrected backend remain unqualified.
+same-file adjacent-tensor regression test also passed. The cheaper-host run
+above subsequently passed the short full-model screen; long-context and broad
+quality qualification remain outstanding.
 
 `bench/tool_continuation.py` adds a tool round-trip check: distinct agents must
 select their own record through a real parsed tool call, receive its result,

@@ -18,8 +18,10 @@ from flashnext_gb10.vllm_nvme import make_nvme_embedding
 
 p=argparse.ArgumentParser()
 p.add_argument('--direct',action='store_true')
+p.add_argument('--async-ids',action='store_true')
 a=p.parse_args()
 os.environ['FLASHNEXT_PLE_DIRECT']='1' if a.direct else '0'
+os.environ['FLASHNEXT_ASYNC_PLE']='1' if a.async_ids else '0'
 
 
 class Constructor(torch.nn.Module):
@@ -90,4 +92,4 @@ with tempfile.TemporaryDirectory() as d:
         expected[(ids<0)|(ids>=8192)]=0
         expected=expected.flatten(-2)
         assert torch.equal(observable, expected), f"stale or corrupt PLE rows at graph replay {step}"
-    print(f"PASS: 32 distinct CUDA graph replays, 8 agents; {graph.num_eager_breaks} eager boundaries; direct={a.direct}")
+    print(f"PASS: 32 distinct CUDA graph replays, 8 agents; {graph.num_eager_breaks} eager boundaries; direct={a.direct}; async_ids={a.async_ids}")

@@ -38,7 +38,11 @@ explicitly. Default DFlash behavior is retained for other configurations.
 
 The first experiment is TP1, eager, BF16 draft weights and BF16 draft KV, with
 the target's embedding and full vocabulary head shared. K=4, 5, and 7 pass CPU
-configuration and weight-header validation. GPU inference, acceptance rates,
+configuration and weight-header validation. `check_positions.py` passed eight
+changing graph replays for each of K=4/5/7 and batch 1/8, using positions beyond
+200k, nonidentity request-state mappings, prefill/bonus tokens and rejected KV
+suffixes. The three pinned upstream input-preparation regressions also passed.
+Full-model GPU inference, acceptance rates,
 sampling equivalence, long-context capacity, and graph execution remain unproved.
 The five full-attention draft layers add substantial KV memory at eight 200k
 contexts; short-context speed does not establish the requested capacity.

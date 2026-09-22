@@ -59,6 +59,13 @@ def make_nvme_embedding(upstream, directory):
             self._staging = None
             self._copy_done = torch.cuda.Event()
             self._copy_recorded = False
+            self._async_ids = os.environ.get('FLASHNEXT_ASYNC_PLE') == '1'
+            if self._async_ids:
+                self._host_ids = torch.empty(
+                    max_total_tokens, num_ngram_heads, dtype=torch.int64,
+                    device='cpu', pin_memory=True,
+                )
+                self._ids_ready = torch.cuda.Event()
             upstream.logger.info("FlashNext NVMe PLE: %.2f GiB file-backed; weight pinned=%s",
                                  self.weight.numel() * self.weight.element_size() / 1024**3,
                                  self.weight.is_pinned())
@@ -108,8 +115,24 @@ def make_nvme_embedding(upstream, directory):
             if self._copy_recorded:
                 self._copy_done.synchronize()
                 self._staging = None
-            ids = ngram_ids.to(device="cpu")
-            self._pending = self._pool.submit(self._gather, ids)
+            if self._async_ids:
+                if (ngram_ids.dtype != torch.int64 or ngram_ids.ndim != 2
+                        or ngram_ids.shape[1] != self._host_ids.shape[1]
+                        or ngram_ids.shape[0] > self._host_ids.shape[0]):
+                    raise ValueError('Unexpected n-gram IDs for asynchronous PLE')
+                ids = self._host_ids[:ngram_ids.shape[0]]
+                ids.copy_(ngram_ids, non_blocking=True)
+                self._ids_ready.record(torch.cuda.current_stream(self._device))
+                self._pending = self._pool.submit(self._gather_after_ids, ids)
+            else:
+                ids = ngram_ids.to(device="cpu")
+                self._pending = self._pool.submit(self._gather, ids)
+
+        def _gather_after_ids(self, ids):
+            # Wait off the model thread. The decoder can enqueue its first layer
+            # while this stream-ordered D2H copy and the CPU gather complete.
+            self._ids_ready.synchronize()
+            return self._gather(ids)
 
         @eager_break_during_capture
         def _finalize_prefetch(self, prefetch_output, output):
