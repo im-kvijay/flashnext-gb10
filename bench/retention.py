@@ -86,8 +86,9 @@ async def main(a):
         before = await engine_counters(session,a.url)
         async def one(i,case):
             name,prompt,expected = case
-            ids = tokenizer.apply_chat_template([{'role':'user','content':prompt}],
-                                                tokenize=True,add_generation_prompt=True)
+            text = tokenizer.apply_chat_template([{'role':'user','content':prompt}],
+                                                 tokenize=False,add_generation_prompt=True)
+            ids = tokenizer.encode(text, add_special_tokens=False)
             async with semaphore:
                 row = await run_one(session,a.url,i,ids,expected,a,barrier)
             row.update(name=name,prompt=prompt,parsed_answer=parse_answer(row['text']))
