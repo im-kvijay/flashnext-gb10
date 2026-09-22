@@ -11,6 +11,7 @@ tensors are symlinked. The source checkpoint is never modified.
 This changes numerics: its outputs require a paired quality comparison before use.
 """
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -53,10 +54,8 @@ def header(path):
 
 
 def pattern_matches(pattern, prefix):
-    """True when an exclude entry (exact or trailing-*) covers this module prefix."""
-    if pattern.endswith('*'):
-        return prefix.startswith(pattern[:-1])
-    return prefix == pattern
+    """True when an exclude entry (exact or glob, e.g. layers.*.linear_attn*) covers this module prefix."""
+    return fnmatch.fnmatchcase(prefix, pattern)
 
 
 def main(a):
