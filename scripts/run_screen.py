@@ -66,6 +66,8 @@ if os.environ.get('SCREEN_FIDELITY', '1') == '1':
     commands.append(('fidelity', ['bench/fidelity.py', '--model', m, '--source',
                                   str(reference / 'profile-workload-c8-4k.json'),
                                   '--corpus-root', corpus]))
+if os.environ.get('SCREEN_SUITE') == '1':
+    commands.append(('suite', ['bench/suite.py', '--data', os.environ.get('FLASHNEXT_EVAL_DATA', str(root / 'data/eval'))]))
 if os.environ.get('SCREEN_ROUTING') == '1':
     commands.append(('routing-c8', ['bench/routing_probe.py', '--model', m]))
 (out / 'server-args.json').write_text(json.dumps(server_args) + '\n')
