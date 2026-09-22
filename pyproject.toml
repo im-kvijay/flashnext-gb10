@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flashnext-gb10"
+version = "0.1.0"
+description = "Qwen3.8 Flash Next serving and NVMe PLE offload for GB10"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.entry-points."vllm.general_plugins"]
+flashnext_nvme = "flashnext_gb10.plugin:register"
+
+[tool.setuptools.packages.find]
+include = ["flashnext_gb10*"]

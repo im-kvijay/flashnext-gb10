@@ -1,0 +1,10 @@
+{
+  "vllm_version": "0.29.1rc1.dev518+ga33b3bac5",
+  "vllm_commit": "a33b3bac5dad5654065adbdadc87f35118e482e3",
+  "vllm_wheel": "https://wheels.vllm.ai/a33b3bac5dad5654065adbdadc87f35118e482e3/vllm-0.29.1rc1.dev518%2Bga33b3bac5-cp38-abi3-manylinux_2_28_aarch64.whl",
+  "model": "nvidia/Qwen3.8-Flash-Next-NVFP4",
+  "model_revision": "fc694b54fb0174e0913e6adf86691ef85a4ead47",
+  "minimum_context_per_agent": 200000,
+  "minimum_concurrent_agents": 8,
+  "release_status": "unqualified"
+}
