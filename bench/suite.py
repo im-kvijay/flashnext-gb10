@@ -185,10 +185,19 @@ async def ask(session, a, item, semaphore):
                    'max_tokens': a.max_tokens, 'temperature': 0}
         start = time.monotonic()
         try:
-            async with session.post(a.url + '/v1/chat/completions', json=payload) as response:
-                body = await response.json()
-                if response.status != 200:
-                    raise RuntimeError(str(body)[:300])
+            for attempt in range(3):
+                try:
+                    async with session.post(a.url + '/v1/chat/completions', json=payload) as response:
+                        body = await response.json()
+                        if response.status != 200:
+                            raise RuntimeError(str(body)[:300])
+                    break
+                except aiohttp.ClientConnectionError:
+                    # A stale keep-alive connection fails before the request reaches the
+                    # server; retrying keeps transport errors out of the quality comparison.
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(1)
             choice = body['choices'][0]
             content = choice['message'].get('content') or ''
             finish = choice['finish_reason']
