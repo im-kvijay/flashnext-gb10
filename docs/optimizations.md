@@ -47,9 +47,22 @@ shard boundaries and invalid IDs, and over all 256 FP8 byte patterns.
 ## Full CUDA graphs
 
 `FULL_AND_PIECEWISE` fails at capture: the CPU PLE gather needs a host
-synchronization, which whole-step graph capture cannot contain. Piecewise
-graphs with an eager break at the PLE layer remain required while the table
-is gathered on the CPU.
+synchronization, which whole-step graph capture cannot contain.
+
+`FLASHNEXT_PLE_PREFORWARD=1` removes that dependency: n-gram IDs depend only on
+the step's input tokens, so they are computed and their rows gathered while
+the runner prepares inputs, then copied into a persistent device buffer. The
+forward only copies from that buffer, with no eager break, so decode can be
+one FULL graph. `scripts/check_graph_replay.py --preforward [--direct]` passes
+32 changing replays of a plain (unbroken) CUDA graph byte for byte. The cost is
+that the gather no longer overlaps the embedding and first layer.
+
+The asynchronous-ID path (`FLASHNEXT_ASYNC_PLE=1`) had a capture race: its
+worker thread synchronized a CUDA event while the main thread was capturing
+the next breakable segment, which invalidates a global-mode capture. Two
+serving launches (`pleio2-mtp2`, `nospec-routing2`) failed at capture this way
+before any measurement. During capture the ID copy is now awaited inside the
+eager break and the worker does CPU-only work; serving replays are unchanged.
 
 ## Dense FP8 (numerics change; needs the fidelity check)
 
@@ -61,6 +74,34 @@ Expected saving about 11-12 ms per step and about 2.5 GiB of weights.
 `FLASHNEXT_DENSE_FP8=1` applies vLLM's online 128x128 block FP8 to those
 projections at load time; the checkpoint is unchanged.
 `scripts/derive_fp8_dense.py` writes an equivalent offline checkpoint.
+
+Measured (`fp8dense2-mtp2`: FP8 dense, buffered pread PLE, asynchronous IDs,
+MTP-2, piecewise graphs): 147.49 tok/s short retrieval, 151.64 on the
+fixed-output stress interval, 110.64 / 114.02 on the natural coding workload
+(draft acceptance 0.588 / 0.571). Against the two baseline measurements
+(127-134, 134-138, 93-103) that is about 11-13%, combining FP8 dense and the
+pread PLE path; `pleio3-mtp2` separates them.
+
+Fidelity against the same-host baseline: on recorded coding continuations,
+top-1 agreement 94.3%, approximate KL 0.023, NLL +0.006 nats/token. On raw
+source-code contexts, top-1 agreement 81.3%, KL 0.34, NLL +0.069, with the
+sign of the NLL change differing between sequences. Raw code inside a user
+turn is high-entropy for this model (median 0.59 but 75th percentile 4.4
+nats/token, frequent end-of-turn predictions), which amplifies any numeric
+change; sparse-attention top-k selection also turns small differences into
+discrete ones. A same-configuration repeat (`noise-baseline-fidelity`) sets
+the noise floor before this is interpreted.
+
+## Weight-only NVFP4 dense (numerics change)
+
+`scripts/derive_nvfp4_dense.py` writes a sibling checkpoint whose 156 GDN and
+QSA projections are W4A16_NVFP4 (FP8 per-16 scales chosen by a small error
+search, one global scale per runtime-fused group), served by vLLM's FP4 Marlin
+GEMM with BF16 activations. Dense bytes per step fall from 8.62 GB to about
+4.8 GB and weights shrink by about 3.8 GB. Per-matrix relative weight error is
+8.6% (FP8 block: about 2.6%), similar to the routed experts NVIDIA already
+ships in NVFP4. The encoder reproduces the checkpoint's expert values exactly
+given their scales. It needs the fidelity and suite comparison before use.
 
 ## Speculation depth
 
