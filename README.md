@@ -32,7 +32,19 @@ clean pages are reclaimable and process exit frees its space. Allow roughly 52 G
 extra disk beyond the downloaded checkpoint and runtime. Only gathered rows are
 pinned. The initial implementation reloads the table on each server start.
 
-Deployment commands and measured results will be finalized after hardware tests.
+From the cloned repository on a Linux GB10 with CUDA 13 and Python 3.12:
+
+```bash
+# Optionally export FLASHNEXT_DATA=/your/nvme/flashnext before both commands.
+bash scripts/bootstrap.sh
+.venv/bin/python scripts/supervise.py --receipt results/memory-run-001.jsonl
+```
+
+The bootstrap installs the locked runtime and verifies the pinned checkpoint's
+LFS hashes. It downloads one checkpoint copy. `FLASHNEXT_RUNTIME` selects another
+virtual environment path; use that environment's Python for the benchmark tools.
+The server listens on localhost:8000 and uses the OpenAI-compatible API. This
+development setup is reproducible, but has not met the release requirements.
 
 For development runs use the memory supervisor, with a new receipt filename:
 
@@ -43,4 +55,7 @@ python scripts/supervise.py --receipt results/memory-run-001.jsonl
 The default GPU memory fraction is conservatively 0.80 after a higher-budget
 long-context run lost contact with its rented host. It is not an eight-agent
 capacity claim. Read `docs/qualification.md` for observed outcomes and remaining
-release gates, and `docs/drafters.md` for the DFlash/DFlash 2 investigation.
+release gates, `docs/drafters.md` for DFlash/DFlash 2, and `docs/exl3.md` for the
+separate EXL3 candidate. `FLASHNEXT_TEXT_ONLY=1` omits the vision encoder; it is
+an explicit text-only option. `FLASHNEXT_KV_DTYPE=fp8` adds KV quantization and
+needs paired retention testing. Neither is silently enabled by the launcher.
