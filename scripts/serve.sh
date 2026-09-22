@@ -29,6 +29,11 @@ fi
 if [[ -n ${FLASHNEXT_KV_DTYPE:-} ]]; then
   EXTRA+=(--kv-cache-dtype "$FLASHNEXT_KV_DTYPE")
 fi
+if [[ -n ${FLASHNEXT_SSM_DTYPE:-} ]]; then
+  # The checkpoint asks for float32 GDN state; bfloat16 halves state traffic
+  # and memory but changes numerics, so it is opt-in and needs the quality gate.
+  EXTRA+=(--mamba-ssm-cache-dtype "$FLASHNEXT_SSM_DTYPE")
+fi
 if [[ -n ${FLASHNEXT_PREFILL_PER_REQUEST:-} ]]; then
   EXTRA+=(--long-prefill-token-threshold "$FLASHNEXT_PREFILL_PER_REQUEST")
 fi
@@ -53,6 +58,11 @@ if [[ ${FLASHNEXT_MTP:-0} != 0 ]]; then
   if [[ -n ${FLASHNEXT_DRAFT_VOCAB:-} ]]; then
     export FLASHNEXT_DRAFT_VOCAB
     DRAFT_EXTRA=',"use_local_argmax_reduction":true'
+  fi
+  # Draft steps after the first reuse the first step's sparse-attention
+  # indices. Affects only draft proposals; verification is unchanged.
+  if [[ ${FLASHNEXT_MTP_INDEX_SHARE:-0} == 1 ]]; then
+    DRAFT_EXTRA+=',"index_share_for_mtp_iteration":true'
   fi
   # The NVIDIA target uses NVFP4 experts but its MTP block uses FP8.
   # B12x's NVFP4 MoE backend cannot also serve the FP8 draft block.

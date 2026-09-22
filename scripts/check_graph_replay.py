@@ -7,7 +7,10 @@ code; expected values come from direct GPU indexing of the resident source.
 import logging
 import argparse
 import os
+import sys
 os.environ["VLLM_USE_BREAKABLE_CUDAGRAPH"] = "1"
+# Read at import time by flashnext_gb10.vllm_nvme.
+os.environ['FLASHNEXT_PLE_PREFORWARD'] = '1' if '--preforward' in sys.argv else '0'
 import tempfile
 from types import SimpleNamespace
 
@@ -19,6 +22,7 @@ from flashnext_gb10.vllm_nvme import make_nvme_embedding
 p=argparse.ArgumentParser()
 p.add_argument('--direct',action='store_true')
 p.add_argument('--async-ids',action='store_true')
+p.add_argument('--preforward',action='store_true',help='stage rows outside a plain (unbroken) CUDA graph')
 a=p.parse_args()
 os.environ['FLASHNEXT_PLE_DIRECT']='1' if a.direct else '0'
 os.environ['FLASHNEXT_ASYNC_PLE']='1' if a.async_ids else '0'
@@ -71,6 +75,29 @@ with tempfile.TemporaryDirectory() as d:
     resident = source.view(torch.uint8).to("cuda")
     ids = torch.randint(0, 8192, (8, 16), device="cuda")
     hidden = torch.zeros(8, 2560, device="cuda", dtype=torch.bfloat16)
+    if a.preforward:
+        for _ in range(2):
+            layer.stage_before_forward(ids)
+            layer.start_prefetch(hidden, ids)
+            output = layer(hidden)
+            torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            layer.start_prefetch(hidden, ids)
+            output = layer(hidden)
+            observable = output.view(torch.uint8).clone()
+        for step in range(32):
+            ids.copy_(torch.randint(0, 8192, ids.shape, device="cuda"))
+            ids[0,:8]=torch.tensor([-1,8192,0,1022,1023,4094,4095,8191],device='cuda')
+            layer.stage_before_forward(ids)
+            graph.replay()
+            torch.cuda.synchronize()
+            expected = resident[ids.clamp(0,8191)]
+            expected[(ids<0)|(ids>=8192)]=0
+            expected=expected.flatten(-2)
+            assert torch.equal(observable, expected), f"stale or corrupt PLE rows at graph replay {step}"
+        print(f"PASS: 32 distinct plain CUDA graph replays with pre-forward staging, 8 agents; direct={a.direct}")
+        raise SystemExit(0)
     for _ in range(2):
         layer.start_prefetch(hidden, ids)
         output = layer(hidden)

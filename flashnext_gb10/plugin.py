@@ -18,6 +18,11 @@ def register():
     if not getattr(ngram_embedding.Qwen4ExpPLEPinnedHostEmbedding, "_flashnext_nvme", False):
         from .vllm_nvme import make_nvme_embedding
         ngram_embedding.Qwen4ExpPLEPinnedHostEmbedding = make_nvme_embedding(ngram_embedding, directory)
+        if os.environ.get("FLASHNEXT_PLE_PREFORWARD") == "1":
+            from vllm.models.qwen4_exp.nvidia import model_state
+            from .vllm_nvme import register_preforward
+            register_preforward(ngram_embedding, model_state)
+            ngram_embedding.logger.info("FlashNext PLE rows are staged before the forward")
     if os.environ.get("FLASHNEXT_DRAFT_VOCAB"):
         from .draft_vocab import register_draft_vocab
         register_draft_vocab(os.environ["FLASHNEXT_DRAFT_VOCAB"])
