@@ -2,6 +2,8 @@
 
 The release target is eight agents on one GB10, each with at least 200,000
 tokens of usable context. A shorter diagnostic run cannot satisfy this target.
+The minimum aggregate output throughput is 400 tokens/second at the required
+concurrency and context. Drafted-but-rejected tokens do not count as output.
 
 The tests must establish:
 
@@ -18,6 +20,9 @@ The tests must establish:
 - A clean clone on GB10 can install the pinned runtime, download and verify the
   checkpoint, start the service and repeat qualification.
 - Kernel/graph optimizations have measured benefit and numerical validation.
+- Drafting is measured by accepted tokens, verification cost, and end-to-end
+  throughput. Compare MTP depths and drafter alternatives; verify target-model
+  sampling semantics rather than assuming a high acceptance rate proves quality.
 
 ## Current evidence
 
@@ -42,3 +47,31 @@ NVMe storage was measured at approximately 83,468 random 4 KiB reads/s at queue
 depth 16. This storage measurement does not prove negligible model latency.
 
 Full-model benchmarks are running; release status remains unqualified.
+
+The warm fixed-length eager test generated 2048 tokens in 24.701 seconds, or
+82.912 aggregate tokens/s including prefill, with all eight streams overlapping.
+This test used `ignore_eos` to hold a fixed budget and is explicitly a synthetic
+stress result. It does not qualify natural workload throughput.
+
+The same baseline passed the single-agent 200,000-input-token retrieval probe,
+returning 195 output tokens and the correct code. TTFT was 91.878 seconds and
+wall time 103.135 seconds. It proves that one long request worked; it does not
+prove eight concurrent long requests or broad long-context reasoning.
+
+The graph/FP8-KV/native-MTP-3 candidate passed 8/8 short retrieval probes and
+reached 147.966 output tokens/s during the 10.827-second interval when all eight
+streams were generating in the synthetic fixed-output test. End-to-end throughput
+was 76.811 tokens/s, below the eager baseline. It reserved 21.43 GiB for KV and
+reported capacity for 1,229,544 tokens, still insufficient for eight long agents.
+
+Its first 200k probe exposed the client's SSE line-size limit: requesting token
+IDs makes vLLM echo a large prompt-ID array. The client now sizes its read buffer
+for the declared context. The corrected retry passed with 308 output tokens in
+10.961 seconds, TTFT 2.695 seconds. This reused the prior processed prompt and
+is a warm-prefix result, not a new cold-prefill speed measurement.
+
+The draft-only vocabulary implementation passed 16 changing CUDA graph replays
+with eight rows each, matching the corresponding subset of full-head logits.
+Full-model throughput and retention for this optimization remain unmeasured.
+The text-only candidate omits the vision encoder and does not support image or
+video inputs; this tradeoff must remain explicit if it becomes a release option.

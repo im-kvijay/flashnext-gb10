@@ -28,10 +28,16 @@ if [[ -n ${FLASHNEXT_PREFILL_PER_REQUEST:-} ]]; then
   EXTRA+=(--long-prefill-token-threshold "$FLASHNEXT_PREFILL_PER_REQUEST")
 fi
 if [[ -n ${FLASHNEXT_PROFILE_DIR:-} ]]; then
-  EXTRA+=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"${FLASHNEXT_PROFILE_DIR}\"}")
+  EXTRA+=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"${FLASHNEXT_PROFILE_DIR}\",\"torch_profiler_with_stack\":false}")
 fi
+if [[ ${FLASHNEXT_TEXT_ONLY:-0} == 1 ]]; then EXTRA+=(--language-model-only); fi
 if [[ ${FLASHNEXT_MTP:-0} != 0 ]]; then
-  EXTRA+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${FLASHNEXT_MTP}}")
+  DRAFT_EXTRA=""
+  if [[ -n ${FLASHNEXT_DRAFT_VOCAB:-} ]]; then
+    export FLASHNEXT_DRAFT_VOCAB
+    DRAFT_EXTRA=',"use_local_argmax_reduction":true'
+  fi
+  EXTRA+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${FLASHNEXT_MTP}${DRAFT_EXTRA}}")
 fi
 if [[ ${FLASHNEXT_EAGER:-0} == 1 ]]; then EXTRA+=(--enforce-eager); fi
 exec "$RUNTIME/bin/vllm" serve "$MODEL" \

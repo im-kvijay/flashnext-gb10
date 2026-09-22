@@ -3,7 +3,7 @@
 Work in progress: this is not yet a qualified release.
 
 Target: Qwen3.8-Flash-Next, eight concurrent agents, **at least 200,000 tokens
-per agent**, high aggregate throughput, and measured retention of reasoning,
+per agent**, **at least 400 aggregate output tokens/second**, and measured retention of reasoning,
 coding, instruction following, tool use, and long-context retrieval.
 
 The baseline is NVIDIA's complete NVFP4 checkpoint, pinned in `runtime.lock.json`.
