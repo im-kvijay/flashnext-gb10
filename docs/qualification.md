@@ -119,3 +119,25 @@ not a default dependency change or a general compatibility claim. Full-model
 quality, throughput, and memory remain to be measured. Use the target's B12x
 MoE backend with the draft backend explicitly set to `auto`, because the
 NVIDIA checkpoint's MTP experts are FP8 rather than NVFP4.
+
+That B12x full-model startup subsequently failed during graph warmup with an
+illegal CUDA memory access, before the service became ready. The asynchronous
+error surfaced in HC SiLU; the originating kernel has not been localized.
+Isolated checks at the actual expert geometry (512 experts, hidden 2560,
+intermediate 640, top-10 routing) then passed at prefill size 2048 and changing
+graph replay sizes 1 through 9, 12, 15, 18, 21, and 24. These checks do not
+establish correctness of the full multilayer integration or real checkpoint
+scales. B12x remains experimental and is not enabled by default.
+
+The optional direct-checkpoint PLE backend (`FLASHNEXT_PLE_DIRECT=1`) gathers
+the original FP8 bytes from retained safetensors mappings rather than copying
+the entire table to a second file. It passed all 256 byte patterns, invalid
+IDs, shard boundaries, out-of-order loading, and one/four-thread gathers, plus
+32 changing CUDA graph replays across eight agents. It rejects heap-backed
+sources and incomplete/overlapping shard coverage. Checkpoint export from this
+backend is unsupported; the source checkpoint remains the portable artifact.
+Its first full-model startup was stopped by the memory supervisor while a
+parallel GPU kernel probe was running. This was test resource contention caused
+by the experiment setup, not evidence of direct PLE's isolated memory demand.
+The successor run is isolated; full-model correctness and performance remain
+unqualified until its results are recorded.
