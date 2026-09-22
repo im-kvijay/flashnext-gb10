@@ -40,7 +40,34 @@ async def engine_counters(session, url):
         return {'counters':{},'error':str(exc)}
 
 
-def make_prompt(tokenizer, count, agent, mode="retrieval"):
+# Natural agentic workload: each agent reads a different real source tree and
+# gets a different engineering task about it. No synthetic filler, no shared
+# prompt, no forced generation.
+CODEBASE_AGENTS = [
+    ("vllm/v1", "Explain how requests move through the scheduler and KV cache manager in this code. Find one concrete edge case that can starve or leak blocks, then write a patch and a regression test."),
+    ("transformers/generation", "Review the generation utilities above. Identify where stopping criteria and logits processors interact incorrectly for batched beams, and implement a fix with tests."),
+    ("torch/_inductor", "Describe how this compiler lowers and schedules fused kernels. Propose and implement a small, safe improvement to one heuristic, with a unit test and an explanation of the risk."),
+    ("vllm/model_executor", "Trace how a quantized MoE layer chooses its kernel in this code. Write a new unit test covering an unsupported configuration and fix any error path that fails it."),
+    ("triton", "Explain how the runtime caches and launches compiled kernels in this code. Find a race or invalidation bug in the cache path and write a patch with a concurrency test."),
+    ("numpy", "Review the array-printing and formatting code above. Implement support for a new formatting option end to end, including argument validation and tests."),
+    ("torch/distributed", "Explain the process-group initialization and failure handling in this code. Design and implement a timeout-and-retry improvement with tests for partial failure."),
+    ("transformers/models", "Walk through the attention and cache implementations above. Implement sliding-window support for the cache path, with tests comparing it to a reference implementation."),
+]
+
+
+def codebase_ids(tokenizer, root, count):
+    ids = []
+    for path in sorted(Path(root).rglob("*.py")):
+        if "test" in path.parts or path.stat().st_size > 400_000:
+            continue
+        text = f"\n# File: {path.relative_to(Path(root).parent)}\n" + path.read_text(errors="replace")
+        ids.extend(tokenizer.encode(text, add_special_tokens=False, verbose=False))
+        if len(ids) >= count:
+            return ids[:count]
+    raise RuntimeError(f"corpus {root} has fewer than {count} tokens")
+
+
+def make_prompt(tokenizer, count, agent, mode="retrieval", corpus_root=None):
     rng = random.Random(7919 + agent)
     secret = f"{rng.randrange(10**9, 10**10)}"
     prefix = tokenizer.encode(f"Agent {agent}: independent record collection.\n", add_special_tokens=False)
@@ -53,6 +80,11 @@ def make_prompt(tokenizer, count, agent, mode="retrieval"):
     filler = tokenizer.encode("".join(lines), add_special_tokens=False, verbose=False)
     marker = tokenizer.encode(f"\nThe verification code for agent {agent} is {secret}.\n", add_special_tokens=False)
     query = f"Return only the verification code for agent {agent} stated in the records. Do not use any other agent's code."
+    if mode == "codebase":
+        subdir, task = CODEBASE_AGENTS[agent % len(CODEBASE_AGENTS)]
+        query = task
+        prefix = tokenizer.encode(f"You are engineering agent {agent}. Repository excerpt from {subdir}:\n", add_special_tokens=False)
+        marker = []
     if mode == "workload":
         query = (
             f"You are engineering agent {agent}. First recover your verification code from these records. "
@@ -75,6 +107,10 @@ def make_prompt(tokenizer, count, agent, mode="retrieval"):
     needed = count - len(before) - len(after) - len(prefix) - len(marker)
     if needed < 0:
         raise ValueError("prompt length too small")
+    if mode == "codebase":
+        ids = before + prefix + codebase_ids(tokenizer, Path(corpus_root) / subdir, needed) + after
+        assert len(ids) == count
+        return ids, None
     if len(filler) < needed:
         raise RuntimeError("insufficient unique filler tokens")
     position = int(needed * ((agent % 8 + 0.5) / 8))
@@ -145,7 +181,7 @@ async def run_one(session, url, index, prompt, expected, args, barrier):
 
 async def main(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    prompts = [make_prompt(tokenizer, args.input_tokens, i, args.mode) for i in range(args.concurrency)]
+    prompts = [make_prompt(tokenizer, args.input_tokens, i, args.mode, args.corpus_root) for i in range(args.concurrency)]
     barrier = asyncio.Event()
     # vLLM includes prompt_token_ids in the first SSE event when token IDs are
     # requested. A 200k prompt exceeds aiohttp's default line buffer.
@@ -225,7 +261,8 @@ if __name__ == '__main__':
     p.add_argument('--concurrency',type=int,default=8)
     p.add_argument('--input-tokens',type=int,default=200000)
     p.add_argument('--output-tokens',type=int,default=8192)
-    p.add_argument('--mode',choices=['retrieval','performance','workload'],default='retrieval')
+    p.add_argument('--mode',choices=['retrieval','performance','workload','codebase'],default='retrieval')
+    p.add_argument('--corpus-root',help='site-packages directory holding the codebase-mode source trees')
     p.add_argument('--timeout',type=int,default=7200)
     p.add_argument('--output',required=True)
     p.add_argument('--warm-prefixes',action='store_true',help='Prime each exact prompt and report priming separately')
@@ -233,4 +270,6 @@ if __name__ == '__main__':
     args=p.parse_args()
     if min(args.concurrency,args.input_tokens,args.output_tokens,args.timeout) <= 0:
         p.error('counts and timeout must be positive')
+    if args.mode == 'codebase' and not args.corpus_root:
+        p.error('codebase mode needs --corpus-root')
     raise SystemExit(asyncio.run(main(args)))
