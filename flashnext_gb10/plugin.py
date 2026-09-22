@@ -9,6 +9,11 @@ def register():
     import vllm
     if vllm.__version__ != "0.29.1rc1.dev518+ga33b3bac5":
         raise RuntimeError(f"Unvalidated vLLM build {vllm.__version__}; expected 0.29.1rc1.dev518+ga33b3bac5")
+    if os.environ.get("FLASHNEXT_DFLASH_MODEL"):
+        # Only the explicit experiment overlay provides this module.
+        vllm.ModelRegistry.register_model(
+            "DFlashQwen3DSparkModel", "dflash_epoch7:DFlashQwen3DSparkModel"
+        )
     from vllm.models.qwen4_exp.nvidia import ngram_embedding
     if not getattr(ngram_embedding.Qwen4ExpPLEPinnedHostEmbedding, "_flashnext_nvme", False):
         from .vllm_nvme import make_nvme_embedding

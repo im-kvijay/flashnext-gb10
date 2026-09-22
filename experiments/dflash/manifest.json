@@ -1,0 +1,28 @@
+{
+  "vllm_commit": "a33b3bac5dad5654065adbdadc87f35118e482e3",
+  "reference_commit": "54b35f57af721ffa8d55f1c0ae79f24952a82fd6",
+  "draft_revision": "9cd660f9050c92fedc88cbe547bd53af0392abe1",
+  "files": {
+    "vllm/config/speculative.py": {
+      "before": "8a9c8a81ee383cc664cd46914a2ad640cd3c6db3a8a08d9584566797b49cbc5a",
+      "after": "ca0c3b7b072a32b2e6b0a3257ff9030df07173c5ad8ac521e2b5ef024e605228"
+    },
+    "vllm/model_executor/models/config.py": {
+      "before": "529c9437a618d072245d24c9eb865a2c9c10b42d17b89594b94cefa869870c08",
+      "after": "4dcf5ca3cdb2568729a1c850d30a87f0333e0fd1472ffb8f5cbfff4708653bdf"
+    },
+    "vllm/models/qwen4_exp/nvidia/model.py": {
+      "before": "bdc0ea930dadc02328c2bee0b4c9cad048b989612cc76906829728668dcde138",
+      "after": "dab60bacd3cfc98efd0d648c1d344fd55f009e1c1df26843f6c0ea9c4f0ac3e7"
+    },
+    "vllm/v1/worker/gpu/model_runner.py": {
+      "before": "04ad516ab6dd3ac59f704c0d39654078db86f1605057a5c641642b754a7c5c39",
+      "after": "c4cbbc3652194a289f724c63a1051f99e8c3d40ce7ec52aa60aa8029ecc77d0e"
+    },
+    "vllm/v1/worker/gpu/spec_decode/dflash/speculator.py": {
+      "before": "f9c100f42f9326e48eb84e89281897e859ba761943f54d593523555ccd98dc63",
+      "after": "0cce38d7531f40ac11b284b54afe5c23035ef9c544b17ab061a714557d25434a"
+    }
+  },
+  "patch_sha256": "e50552980fe2db052a74106c6b72c6807e2b79264591d915ca7272ff7a42c587"
+}

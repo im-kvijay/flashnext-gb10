@@ -1,0 +1,153 @@
+diff --git a/vllm/config/speculative.py b/vllm/config/speculative.py
+index eb9d548..e5b979d 100644
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -1904,6 +1904,10 @@ class SpeculativeConfig:
+         num_draft_tokens = self.num_speculative_tokens
+ 
+         if self.use_dflash():
++            draft_config = self.draft_model_config.hf_config
++            dflash_config = getattr(draft_config, "dflash_config", None) or {}
++            if dflash_config.get("sample_from_anchor", False):
++                return num_draft_tokens - 1
+             # DFlash uses one bonus query followed by K mask queries.
+             return num_draft_tokens
+ 
+diff --git a/vllm/model_executor/models/config.py b/vllm/model_executor/models/config.py
+index 8288eab..bd5224d 100644
+--- a/vllm/model_executor/models/config.py
++++ b/vllm/model_executor/models/config.py
+@@ -888,11 +888,12 @@ class Qwen4ExpForConditionalGenerationConfig(Qwen3_5ForConditionalGenerationConf
+         spec_config = vllm_config.speculative_config
+         if spec_config is not None and spec_config.method not in {
+             "mtp",
++            "dflash",
+             "ngram",
+             "ngram_gpu",
+         }:
+             raise NotImplementedError(
+-                "Qwen4Exp speculative decoding supports only its native MTP "
++                "Qwen4Exp speculative decoding supports native MTP, adapted DFlash, "
+                 "checkpoint and linear n-gram proposers"
+             )
+ 
+diff --git a/vllm/models/qwen4_exp/nvidia/model.py b/vllm/models/qwen4_exp/nvidia/model.py
+index 2e38339..0de71eb 100644
+--- a/vllm/models/qwen4_exp/nvidia/model.py
++++ b/vllm/models/qwen4_exp/nvidia/model.py
+@@ -313,6 +313,9 @@ class Qwen4ExpDecoderLayer(nn.Module):
+         else:
+             hidden_states, block_input, injection = attn_hc.mix(hidden_states)
+ 
++        if getattr(self, "_dflash_capture_context", False):
++            self._dflash_context_feature = block_input
++
+         if self.layer_type == "linear_attention":
+             attn_out = self.linear_attn(hidden_states=block_input)
+         elif self.layer_type in ATTENTION_LAYER_TYPES:
+@@ -462,6 +465,16 @@ class Qwen4ExpModel(nn.Module):
+         else:
+             self._mtp_hidden_buffer = None
+ 
++    def set_dflash_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
++        # DeepSpec taps the next layer's learned HC contraction, not a raw mean.
++        if tuple(layers) != (4, 16, 24, 36, 44):
++            raise ValueError("Flash Next DFlash requires boundaries (4,16,24,36,44)")
++        if self.start_layer != 0 or self.end_layer != 48:
++            raise ValueError("Flash Next DFlash requires all 48 layers on PP1")
++        self._dflash_aux_boundaries = tuple(layers)
++        for index, layer in enumerate(self.layers):
++            layer._dflash_capture_context = index in layers
++
+     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+         return self.embed_tokens(input_ids)
+ 
+@@ -509,6 +522,8 @@ class Qwen4ExpModel(nn.Module):
+                 raise ValueError("pipeline stage requires intermediate tensors")
+             hidden_states = intermediate_tensors["hidden_states"]
+ 
++        aux_hidden_states = []
++        aux_boundaries = getattr(self, "_dflash_aux_boundaries", ())
+         block_output = None
+         injection = None
+         last_layer = None
+@@ -541,6 +556,8 @@ class Qwen4ExpModel(nn.Module):
+                 query_start_loc=query_start_loc,
+                 ngram_context=ngram_context,
+             )
++            if layer_idx in aux_boundaries:
++                aux_hidden_states.append(layer._dflash_context_feature)
+             if deepstack_input_embeds is not None and layer_idx < len(
+                 deepstack_input_embeds
+             ):
+@@ -587,6 +604,10 @@ class Qwen4ExpModel(nn.Module):
+             # this tensor is needed by the final mixer regardless).
+             num_tokens = multi_hidden.shape[0]
+             self._mtp_hidden_buffer[:num_tokens].copy_(multi_hidden)
++        if aux_boundaries:
++            if len(aux_hidden_states) != 5:
++                raise RuntimeError("Missing Flash Next DFlash HC features")
++            return sample_hidden_states, aux_hidden_states
+         return sample_hidden_states
+ 
+     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+@@ -879,6 +900,14 @@ class Qwen4ExpForConditionalGeneration(
+ ):
+     """Qwen3-VL vision tower backed by the Qwen4Exp language model."""
+ 
++    supports_eagle3 = True
++
++    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
++        self.language_model.model.set_dflash_aux_hidden_state_layers(layers)
++
++    def get_eagle3_default_aux_hidden_state_layers(self) -> tuple[int, ...]:
++        return (4, 16, 24, 36, 44)
++
+     requires_raw_input_tokens = True
+ 
+     packed_modules_mapping = Qwen3_5ForConditionalGeneration.packed_modules_mapping | {
+diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
+index a5e5ac2..dbfb046 100644
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -876,7 +876,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             spec_hidden_states = hidden_states
+             if hasattr(self.model, "get_mtp_target_hidden_states"):
+                 pre_hc_hidden_states = self.model.get_mtp_target_hidden_states()
+-                spec_hidden_states = pre_hc_hidden_states[: hidden_states.shape[0]]  # type: ignore[union-attr]
++                if pre_hc_hidden_states is not None:
++                    spec_hidden_states = pre_hc_hidden_states[: hidden_states.shape[0]]
+             if isinstance(self.sampler, GPUWatermarkSampler):
+                 self.speculator.prepare_watermarking(
+                     self.sampler._get_contexts(input_batch.idx_mapping),
+@@ -2140,7 +2141,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             spec_hidden_states = draft_hidden_states
+             if hasattr(self.model, "get_mtp_target_hidden_states"):
+                 pre_hc_hidden_states = self.model.get_mtp_target_hidden_states()
+-                spec_hidden_states = pre_hc_hidden_states[: draft_hidden_states.size(0)]
++                if pre_hc_hidden_states is not None:
++                    spec_hidden_states = pre_hc_hidden_states[: draft_hidden_states.size(0)]
+             if isinstance(self.sampler, GPUWatermarkSampler):
+                 self.speculator.prepare_watermarking(
+                     self.sampler._get_contexts(input_batch.idx_mapping),
+diff --git a/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py b/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
+index a571082..27978f3 100644
+--- a/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
++++ b/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
+@@ -71,13 +71,9 @@ class DFlashSpeculator(DraftModelSpeculator):
+         dflash_config = (
+             getattr(self.draft_model_config.hf_config, "dflash_config", None) or {}
+         )
+-        if dflash_config.get("sample_from_anchor", False):
+-            raise ValueError(
+-                "sample_from_anchor=True is not supported for DFlash. "
+-                "DFlash uses a fixed 1+N query layout where the anchor "
+-                "is the bonus token."
+-            )
+-        self.sample_from_anchor = False
++        self.sample_from_anchor = bool(dflash_config.get("sample_from_anchor", False))
++        if self.sample_from_anchor:
++            self.num_query_per_req = self.num_speculative_steps
+ 
+         # Context positions for the K/V precompute. Populated by
+         # prepare_dflash_inputs, and processed by the model's

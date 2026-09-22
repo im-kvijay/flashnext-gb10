@@ -36,6 +36,18 @@ if [[ -n ${FLASHNEXT_PROFILE_DIR:-} ]]; then
   EXTRA+=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"${FLASHNEXT_PROFILE_DIR}\",\"torch_profiler_with_stack\":false}")
 fi
 if [[ ${FLASHNEXT_TEXT_ONLY:-0} == 1 ]]; then EXTRA+=(--language-model-only); fi
+if [[ -n ${FLASHNEXT_DFLASH_MODEL:-} ]]; then
+  if [[ ${FLASHNEXT_MTP:-0} != 0 || -n ${FLASHNEXT_DRAFT_VOCAB:-} ]]; then
+    echo 'DFlash requires MTP and its reduced draft vocabulary disabled' >&2
+    exit 2
+  fi
+  if [[ ${FLASHNEXT_EAGER:-0} != 1 ]]; then
+    echo 'The experimental DFlash attachment currently requires FLASHNEXT_EAGER=1' >&2
+    exit 2
+  fi
+  DFLASH_CONFIG=$("$RUNTIME/bin/python" -c 'import json,sys; print(json.dumps(dict(method="dflash",model=sys.argv[1],num_speculative_tokens=int(sys.argv[2]),draft_tensor_parallel_size=1,quantization=None,kv_cache_dtype="auto")))' "$FLASHNEXT_DFLASH_MODEL" "${FLASHNEXT_DFLASH_K:-4}")
+  EXTRA+=(--speculative-config "$DFLASH_CONFIG")
+fi
 if [[ ${FLASHNEXT_MTP:-0} != 0 ]]; then
   DRAFT_EXTRA=""
   if [[ -n ${FLASHNEXT_DRAFT_VOCAB:-} ]]; then

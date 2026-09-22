@@ -21,9 +21,11 @@ using two GB10s, concurrency one, 8k context, and thinking disabled. Code was
 roughly tied and chat slower. Their graph integration is not working. These
 conditions do not qualify our single-GB10, eight-agent, 200k, xhigh workload.
 
-The checkpoint is downloaded for investigation. No local DFlash throughput or
-quality result exists yet. Its serving adapter needs compatibility work against
-the pinned runtime; do not enable it merely by changing a model name.
+The checkpoint is downloaded and its LFS hash verified. An isolated
+[V2 adapter](../experiments/dflash/README.md) ports the HC taps and anchor layout
+to the pinned runtime. All 58 checkpoint tensors match the required BF16 shapes;
+K=4, 5, and 7 pass the CPU configuration check. No local DFlash throughput or
+quality result exists yet. Do not enable it merely by changing a model name.
 
 Native MTP is the first measured candidate. A draft-only reduced vocabulary
 projection is also staged. It changes proposals, while leaving target logits,
