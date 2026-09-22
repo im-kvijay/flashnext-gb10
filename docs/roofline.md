@@ -33,8 +33,9 @@ tokens, 0.6 of the uniform estimate. Floors at 240 GB/s with that calibration
 | 7 | 44.6 | 186 ms | 345 tok/s | 9.29 (max 8) |
 
 Even at an optimistic 0.4 expert fraction, 400 tok/s needs k=6 with 6.84 of 7
-drafts accepted on average. Natural-workload MTP acceptance here is 2.3 to 2.65
-tokens per step at k=2. With experts treated as free, BF16 dense weights, GDN
+drafts accepted on average. Measured MTP-2 mean accepted length in the
+`cheaper-direct-mtp2` run was 2.18 on the natural coding workload (58.9% of
+drafts), 2.49 on the reasoning retention screen and 2.65 on short retrieval. With experts treated as free, BF16 dense weights, GDN
 state and draft reads alone need 49 ms per k=2 step.
 
 These floors omit long-context indexer and KV reads, speculative rollback state,
@@ -42,10 +43,19 @@ activations, launch gaps and kernel inefficiency, so real throughput is lower.
 The observed MTP-2 run takes about 172 ms per step against a 113 ms floor: GPU
 idle time was 19% of the profiled interval, and kernels ran below peak bandwidth.
 
+The expert fraction is inferred, not counted: it assumes the NVFP4 grouped GEMM
+runs near 235 GB/s. If that kernel is tile-bound at two to three tokens per
+expert, fewer experts are read, the fraction is nearer 0.4, and MoE kernel
+efficiency becomes the largest lossless lever. Counting distinct routed experts
+per layer on the coding workload settles this.
+
 Conclusion: with the pinned checkpoint and no change in model outputs, 400
 aggregate output tokens/s at eight concurrent agents is above one GB10's memory
-bandwidth. Lossless engineering can approach roughly 200 tok/s on natural
-workloads. Reaching 400 requires more memory bandwidth, such as two linked GB10s
-serving one model, or fewer bytes per step, which changes the weights.
+bandwidth. At the measured coding acceptance of 2.18, the k=2 floor gives about
+155 tok/s at fraction 0.6 and 190 at 0.4, before long-context reads and launch
+gaps. Reaching 400 requires fewer bytes per step, which changes the weights, or
+more memory bandwidth. Two linked GB10s halve per-device bytes but add two
+collectives per layer; at realistic acceptance that estimate is roughly 300 to
+350 tok/s and has not been measured.
 Lossless entropy coding of BF16 dense weights can remove only part of the dense
 component.

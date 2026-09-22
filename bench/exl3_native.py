@@ -4,6 +4,7 @@ This bypasses HTTP and tool parsing. It is engine evidence, not API qualificatio
 Stop tokens are respected; only emitted token IDs count toward throughput.
 """
 import argparse
+from copy import copy
 import hashlib
 import json
 import os
@@ -32,7 +33,8 @@ def main(a):
     output.parent.mkdir(parents=True, exist_ok=True)
     hf = AutoTokenizer.from_pretrained(a.tokenizer)
     prompts = [make_prompt(hf, a.input_tokens, i, a.mode) for i in range(a.concurrency)]
-    required = a.concurrency * ((a.input_tokens + a.output_tokens + a.mtp + 255) // 256 * 256)
+    capacity_input = max(a.input_tokens, 200000) if a.long_context_screen else a.input_tokens
+    required = a.concurrency * ((capacity_input + a.output_tokens + a.mtp + 255) // 256 * 256)
     if a.cache_tokens < required:
         raise ValueError(f"Cache needs at least {required} tokens for all requests")
     start_load = time.monotonic()
@@ -69,6 +71,28 @@ def main(a):
         max_chunk_size=a.prefill, draft_model=draft, draft_cache=draft_cache,
         num_draft_tokens=a.mtp, recurrent_cache_size=a.recurrent_cache_gib * 1024**3)
     loaded_seconds = time.monotonic() - start_load
+    report = run_screen(generator, prompts, stops, a, loaded_seconds)
+    if a.long_context_screen:
+        if report["summary"]["retrieval_correct"] != a.concurrency:
+            raise RuntimeError("Short retrieval failed; long-context screen cancelled")
+        for stage, count in enumerate((1, 2, 4, 8), start=1):
+            follow = copy(a)
+            follow.concurrency = count
+            follow.input_tokens = 200000
+            follow.output = str(output.with_name(f"{output.stem}-c{count}-200k.json"))
+            # Independent records at every stage; do not prime a later result
+            # with a previous stage's full context.
+            long_prompts = [make_prompt(hf, 200000, 100 * stage + i, "retrieval")
+                            for i in range(count)]
+            report = run_screen(generator, long_prompts, stops, follow, loaded_seconds)
+            if report["summary"]["retrieval_correct"] != count:
+                raise RuntimeError(f"{count}-request long retrieval failed; screen stopped")
+
+
+def run_screen(generator, prompts, stops, a, loaded_seconds):
+    output = Path(a.output)
+    if output.exists():
+        raise ValueError("Refusing to replace an existing experiment")
     jobs = []
     rows = []
     for i, (ids, expected) in enumerate(prompts):
@@ -80,8 +104,10 @@ def main(a):
             token_events=[], output_token_ids=[], text="", finish=None, requeues=0))
     started = time.monotonic()
     generator.enqueue(jobs)
+    peak_active = 0
     while generator.num_remaining_jobs():
         events = generator.iterate()
+        peak_active = max(peak_active, len(generator.active_jobs))
         now = time.monotonic()
         for event in events:
             row = rows[event["job"].identifier]
@@ -112,6 +138,7 @@ def main(a):
     tokens = sum(n for row in rows for t, n in row["token_events"] if overlap_start < t <= overlap_end)
     summary = dict(engine="exl3_native", mode=a.mode, concurrency=a.concurrency,
         input_tokens_each=a.input_tokens, mtp=a.mtp, load_seconds=loaded_seconds,
+        peak_active_jobs=peak_active,
         int8_gemv=os.environ["EXL3_INT8_GEMV"], hc_int8=False, draft_vocabulary_pruned=False,
         wall_seconds=elapsed, all_streams_overlap_seconds=overlap,
         all_streams_overlap_output_tokens=tokens,
@@ -122,6 +149,7 @@ def main(a):
         requeues=sum(r["requeues"] for r in rows), release_qualified=False)
     output.write_text(json.dumps(dict(summary=summary, requests=rows, arguments=vars(a)), indent=2)+"\n")
     print(json.dumps(summary, indent=2), flush=True)
+    return dict(summary=summary, requests=rows)
 
 
 if __name__ == "__main__":
@@ -138,9 +166,17 @@ if __name__ == "__main__":
     p.add_argument("--mtp", type=int, choices=(0, 1, 2, 3), default=0)
     p.add_argument("--mode", choices=("retrieval", "workload"), default="retrieval")
     p.add_argument("--prepare-only", action="store_true")
+    p.add_argument("--long-context-screen", action="store_true",
+                   help="After short retrieval, test 1/2/4/8 independent 200k prompts without reloading")
     args = p.parse_args()
     if min(args.input_tokens, args.output_tokens, args.concurrency, args.cache_tokens, args.prefill) <= 0:
         p.error("Token counts and concurrency must be positive")
     if args.cache_tokens % 256:
         p.error("Cache tokens must be a multiple of the 256-token page size")
+    if args.long_context_screen and (args.mode != "retrieval" or args.concurrency != 8):
+        p.error("Long-context screen requires retrieval mode and concurrency 8")
+    if args.long_context_screen:
+        output = Path(args.output)
+        if any(output.with_name(f"{output.stem}-c{n}-200k.json").exists() for n in (1, 2, 4, 8)):
+            p.error("A follow-up receipt exists; choose a new output prefix")
     main(args)
