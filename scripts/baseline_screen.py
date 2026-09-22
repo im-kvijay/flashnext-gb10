@@ -36,6 +36,7 @@ for name, concurrency, tokens, output, mode in [
         for script,extra in [
             ('scripts/profile_decode.py', ['--output',str(out/'profile-workload-c8-4k.json')]),
             ('bench/retention.py', ['--label',out.name,'--output',str(out/'retention.json')]),
+            ('bench/tool_continuation.py', ['--input-tokens','4096','--output',str(out/'tools-c8-4k.json')]),
         ]:
             print('RUN',script,flush=True)
             subprocess.run([sys.executable,str(root/script),'--model',a.model,*extra],check=True)

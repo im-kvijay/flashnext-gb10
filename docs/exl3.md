@@ -4,6 +4,12 @@ The read-only delegated investigation found a plausible memory-saving candidate,
 not evidence that EXL3 reaches 400 aggregate output tokens/s with eight 200k
 agents. No EXL3 full-model benchmark has run in this project.
 
+The pinned fork now builds as an ARM64 Python 3.12 wheel with Torch 2.13.0
+and CUDA 13, targeting SM 12.1. The extension imported successfully on the
+replacement GB10. Build and import success do not establish model correctness
+or speed. Put the runtime's `bin` directory on `PATH` before building so Torch
+finds Ninja; otherwise it falls back to serial compilation.
+
 Candidate source: [vcruz305/exllamav3](https://github.com/vcruz305/exllamav3/tree/329e051385505b6ba981138d86a90bffe032c831)
 at `329e051385505b6ba981138d86a90bffe032c831`. This ARM64/GB10 fork is distinct
 from upstream `turboderp-org/exllamav3` at

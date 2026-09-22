@@ -148,3 +148,10 @@ All 128 real checkpoint shards then loaded, with exact-byte comparisons for
 256 boundary rows, and the 32 changing CUDA graph replays passed again. A
 same-file adjacent-tensor regression test also passed. Full-model correctness
 and performance of the corrected backend remain unqualified.
+
+`bench/tool_continuation.py` adds a tool round-trip check: distinct agents must
+select their own record through a real parsed tool call, receive its result,
+and return only their own verification code. It verifies server-reported input
+usage against the requested context floor and requires a normal final stop.
+Prompt preparation passed for eight 4k contexts and two 200k contexts; generated
+tool calls and continuations remain to be tested against the running model.
