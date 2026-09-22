@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 RUNTIME=${FLASHNEXT_RUNTIME:-$ROOT/.venv}
+export PATH="$RUNTIME/bin:$PATH"
 DATA=${FLASHNEXT_DATA:-$ROOT/data}
 MODEL=${FLASHNEXT_MODEL:-$DATA/models/nvidia-flashnext}
 export FLASHNEXT_PLE_NVME_DIR=${FLASHNEXT_PLE_NVME_DIR:-$DATA/ple}
