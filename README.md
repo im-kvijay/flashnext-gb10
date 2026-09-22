@@ -32,6 +32,12 @@ clean pages are reclaimable and process exit frees its space. Allow roughly 52 G
 extra disk beyond the downloaded checkpoint and runtime. Only gathered rows are
 pinned. The initial implementation reloads the table on each server start.
 
+Experimental `FLASHNEXT_PLE_DIRECT=1` instead reads the existing checkpoint
+mappings, avoiding that extra table file. It requires a C compiler with OpenMP
+and retains exact FP8 bytes. Shard and graph checks pass; full-model validation
+is pending. Checkpoint export from this mode is unsupported: retain the original
+verified checkpoint.
+
 From the cloned repository on a Linux GB10 with CUDA 13 and Python 3.12:
 
 ```bash

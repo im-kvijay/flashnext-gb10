@@ -139,5 +139,12 @@ backend is unsupported; the source checkpoint remains the portable artifact.
 Its first full-model startup was stopped by the memory supervisor while a
 parallel GPU kernel probe was running. This was test resource contention caused
 by the experiment setup, not evidence of direct PLE's isolated memory demand.
-The successor run is isolated; full-model correctness and performance remain
-unqualified until its results are recorded.
+The isolated successor stopped during PLE loading: its file-mapping validation
+incorrectly assumed each tensor occupied one Linux VMA. Random-access advice
+for one tensor can split the next tensor's mapping. This was reproduced on
+checkpoint shard 1 without loading the model. The fix checks contiguous file
+offsets, device/inode identity, and readable mappings across VMA boundaries.
+All 128 real checkpoint shards then loaded, with exact-byte comparisons for
+256 boundary rows, and the 32 changing CUDA graph replays passed again. A
+same-file adjacent-tensor regression test also passed. Full-model correctness
+and performance of the corrected backend remain unqualified.
