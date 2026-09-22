@@ -117,6 +117,10 @@ async def run_one(session, url, index, prompt, expected, args, barrier):
                         result["output_token_ids"].extend(ids)
                         if result["first_token"] is None:
                             result["first_token"] = now
+                            if getattr(args,'first_token_dir',None):
+                                marker=Path(args.first_token_dir)/f'agent-{index}.json'
+                                with marker.open('x') as stream:
+                                    json.dump({'agent':index,'first_token':now},stream)
                     result["text"] += text
                     if choice.get("finish_reason"):
                         result["finish_reason"] = choice["finish_reason"]
@@ -155,6 +159,7 @@ async def main(args):
             prime_args = copy(args)
             prime_args.output_tokens = 1
             prime_args.mode = 'prime'
+            prime_args.first_token_dir = None
             barrier.set()
             for i, (prompt, expected) in enumerate(prompts):
                 row = await run_one(session,args.url,i,prompt,expected,prime_args,barrier)
@@ -224,6 +229,7 @@ if __name__ == '__main__':
     p.add_argument('--timeout',type=int,default=7200)
     p.add_argument('--output',required=True)
     p.add_argument('--warm-prefixes',action='store_true',help='Prime each exact prompt and report priming separately')
+    p.add_argument('--first-token-dir',help='Existing empty directory for profiler readiness markers')
     args=p.parse_args()
     if min(args.concurrency,args.input_tokens,args.output_tokens,args.timeout) <= 0:
         p.error('counts and timeout must be positive')
