@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from huggingface_hub import HfApi, snapshot_download
@@ -19,6 +20,7 @@ for entry in info.siblings:
     path = Path(a.directory) / entry.rfilename
     with path.open("rb") as f:
         digest = hashlib.file_digest(f, "sha256").hexdigest()
+        os.posix_fadvise(f.fileno(),0,0,os.POSIX_FADV_DONTNEED)
     if digest != entry.lfs.sha256:
         raise RuntimeError(f"SHA256 mismatch: {entry.rfilename}")
     verified.append({"path": entry.rfilename, "sha256": digest, "size": path.stat().st_size})

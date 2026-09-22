@@ -17,6 +17,7 @@ export TORCHINDUCTOR_CACHE_DIR=$DATA/cache/inductor
 export FLASHINFER_WORKSPACE_BASE=$DATA/cache/flashinfer
 export PYTHONUNBUFFERED=1
 mkdir -p "$FLASHNEXT_PLE_NVME_DIR" "$DATA/cache"
+"$RUNTIME/bin/python" "$ROOT/scripts/reclaim_model_cache.py" "$MODEL" --also-directory "$RUNTIME"
 EXTRA=()
 if [[ -n ${FLASHNEXT_KV_BYTES:-} ]]; then
   EXTRA+=(--kv-cache-memory-bytes "$FLASHNEXT_KV_BYTES")

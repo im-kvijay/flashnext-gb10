@@ -30,7 +30,8 @@ for group in receipt['layout']['kv_cache_groups']:
             raw['dtype']=getattr(torch,raw['dtype'].split('.')[-1])
             raw['kv_quant_mode']=KVQuantMode(raw['kv_quant_mode'])
         specs[name]=cls(**raw)
-config=NS(parallel_config=NS(tensor_parallel_size=1),kv_transfer_config=None,
+config=NS(parallel_config=NS(tensor_parallel_size=1,decode_context_parallel_size=1,
+                            prefill_context_parallel_size=1),kv_transfer_config=None,
           model_config=NS(hf_text_config=NS(model_type='qwen4_exp_text'),max_model_len=212992),
           cache_config=NS(mamba_cache_mode='align',get_resolved_kv_cache_layout=lambda:NS(is_block_outermost=True)),
           speculative_config=NS(method='mtp',use_eagle=lambda:True,use_eagle_block_drop=lambda:True))

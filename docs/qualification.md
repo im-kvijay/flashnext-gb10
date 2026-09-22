@@ -90,3 +90,10 @@ own service process group after a sustained breach of the 8 GiB floor. Use it
 for subsequent hardware experiments. The floor is a guard, not proof against
 driver or provider failures. Packed PLE state and wider verification graphs are
 staged but have not yet been measured in a full-model run.
+
+Reconstructing the recorded cache layout through the pinned upstream allocator
+passed: normalizing the PLE replication marker at TP=DP=PP=1 reduces six cache
+groups to five, and 88 blocks per 212,992-token request to 83. Every layer remains
+present; all state dimensions, dtypes and rollback counts remain unchanged. The
+plugin rejects multi-device configurations and KV connectors. Full-model
+continuation/rollback tests are still required.
