@@ -29,13 +29,15 @@ threads reached 5 ms on an idle disk. The loader's sequential reads reduce
 random-read capacity to about 12k IOPS, so measurements taken during model
 loading are not representative.
 
-Measured in serving (`pleio-buffered-mtp2`: buffered pread, asynchronous ID
-staging, otherwise the baseline configuration): 134.35 tok/s on short
-retrieval (baseline 127.24), 137.58 on the fixed-output stress interval
-(134.29), and 92.56 / 103.19 on two unprofiled natural coding-workload runs
-(draft acceptance 0.556 / 0.578). The gain is 3-6%, smaller than the profiled
-gap suggested; GPU utilization still dips to 56-96% during coding decode, so
-the remaining idle time has another cause, to be identified by profiling.
+Correction: the run labelled `pleio-buffered-mtp2` (134.35 tok/s short
+retrieval, 137.58 stress, 92.56 / 103.19 coding) imported an older installed
+copy of this package, so only asynchronous ID staging was active and the
+pread path was not exercised. The same happened to `pleio-fp8dense-mtp2`,
+which is therefore a second baseline measurement (126.73 retrieval, 136.84
+stress, 95.52 / 102.14 coding), not an FP8 result. Run-to-run noise is about
+5%. `scripts/run_screen.py` now puts this tree first on `PYTHONPATH`, and the
+server logs `FlashNext direct PLE lookup: io_mode=...` and the dense-FP8 hook
+so that activation can be confirmed from `server.log`.
 
 `FLASHNEXT_PLE_IO` selects `buffered` (default: pread with random advice,
 page-cache hits stay cheap), `direct` (O_DIRECT) or `mapped` (previous path).
