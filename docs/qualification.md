@@ -97,3 +97,25 @@ groups to five, and 88 blocks per 212,992-token request to 83. Every layer remai
 present; all state dimensions, dtypes and rollback counts remain unchanged. The
 plugin rejects multi-device configurations and KV connectors. Full-model
 continuation/rollback tests are still required.
+
+On the replacement GB10, the packed-state/MTP-2/FP8-KV candidate with all
+verification graph sizes captured passed 8/8 short retrievals. Its synthetic
+eight-stream overlap rate was 102.688 tokens/s (43.377 including prefill), with
+no preemptions and 1284/1528 draft tokens accepted. This host was observed at
+604 MHz under active inference; a separate short BF16 GEMM probe stayed near
+598 MHz. The driver refused a reset to default clocks. These observations do
+not isolate clocks from the changed host, MTP depth, and memory configuration.
+
+An explicit 8 GiB cache reported 505,856 tokens of capacity (2.38 requests at
+212,992). The single 200k probe was terminated by the supervisor at 7.699 GiB
+MemAvailable before producing an answer. The host remained reachable. This
+is a recorded memory-floor failure, not a successful long-context result.
+
+Optional `b12x==1.3.0` passed the pinned upstream small NVFP4 MoE numerical
+reference and 16 changing graph replays at each of 1, 8, and 24 tokens. Eager
+and replay outputs matched exactly in those fixtures. Testing used CuTe DSL
+4.7.1 despite the package declaring 4.6.2; this is an experimental combination,
+not a default dependency change or a general compatibility claim. Full-model
+quality, throughput, and memory remain to be measured. Use the target's B12x
+MoE backend with the draft backend explicitly set to `auto`, because the
+NVIDIA checkpoint's MTP experts are FP8 rather than NVFP4.
