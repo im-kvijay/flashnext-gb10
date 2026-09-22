@@ -48,3 +48,10 @@ baseline. Test speculation off, MTP-1, then MTP-3; require short correctness and
 tool parsing before 1/2/4/8 distinct long requests. Record normal EOS, accepted
 output tokens, prefill latency, preemptions, memory, and failures. Any promotion
 also needs paired retention evidence against the NVIDIA reference.
+
+`bench/exl3_native.py` stages the engine comparison using exactly the vLLM
+screen's prompt token IDs, normal EOS, greedy sampling, and emitted-token timing.
+It checks tokenizer agreement and reserves cache for all requests. Run it under
+`scripts/supervise.py --receipt <new-file> --command <python> bench/exl3_native.py ...`.
+This native screen bypasses HTTP and tool parsing and is not API qualification.
+The harness is staged; it has not yet run against the full EXL3 checkpoint.

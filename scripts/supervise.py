@@ -39,7 +39,8 @@ def main(a):
     # Reserve the receipt before launching an expensive service.
     stream = output.open('x')
     try:
-        process = subprocess.Popen(['bash',str(root/'scripts/serve.sh'),*a.server_args],start_new_session=True)
+        command = a.command or ['bash',str(root/'scripts/serve.sh'),*a.server_args]
+        process = subprocess.Popen(command,start_new_session=True)
     except BaseException:
         stream.close()
         raise
@@ -80,8 +81,12 @@ if __name__ == '__main__':
     p.add_argument('--receipt',required=True,help='New JSONL file; existing runs are never overwritten')
     p.add_argument('--minimum-available-gib',type=float,default=8)
     p.add_argument('--grace-seconds',type=float,default=3)
+    p.add_argument('--command',nargs=argparse.REMAINDER,
+                   help='Run an explicit argv under the same guard, for native engine experiments')
     a, a_server=p.parse_known_args()
     a.server_args=a_server[1:] if a_server[:1]==['--'] else a_server
+    if a.command is not None and (not a.command or a.server_args):
+        p.error('--command needs an argv and cannot be mixed with server arguments')
     if a.minimum_available_gib<=0 or a.grace_seconds<0:
         p.error('memory floor must be positive and grace nonnegative')
     raise SystemExit(main(a))
