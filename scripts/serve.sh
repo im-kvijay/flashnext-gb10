@@ -62,6 +62,8 @@ if [[ ${FLASHNEXT_MTP:-0} != 0 ]]; then
   EXTRA+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${FLASHNEXT_MTP}${DRAFT_EXTRA}}")
 fi
 if [[ ${FLASHNEXT_EAGER:-0} == 1 ]]; then EXTRA+=(--enforce-eager); fi
+# FLASHNEXT_CUDAGRAPH_MODE=FULL_AND_PIECEWISE also captures uniform decode
+# batches, including attention and GDN, as whole graphs.
 # Capture sizes count tokens, not requests. MTP K verifies K+1 tokens per
 # request, so eight MTP-3 agents need a 32-token target graph.
 CAPTURE_SIZES=${FLASHNEXT_CAPTURE_SIZES:-$("$RUNTIME/bin/python" -c 'import json,sys; n,k=map(int,sys.argv[1:]); assert n>0 and k>=0; print(json.dumps(sorted(set(range(1,n+1)) | {i*(k+1) for i in range(1,n+1)})))' "${FLASHNEXT_SEQUENCES:-8}" "${FLASHNEXT_MTP:-0}")}
@@ -73,6 +75,6 @@ exec "$RUNTIME/bin/vllm" serve "$MODEL" \
   --enable-chunked-prefill \
   --gpu-memory-utilization "${FLASHNEXT_MEMORY_FRACTION:-0.80}" \
   --engram-config '{"cpu_offload":true,"dp_shared_memory":false}' \
-  --compilation-config "{\"cudagraph_mode\":\"PIECEWISE\",\"cudagraph_capture_sizes\":${CAPTURE_SIZES}}" \
+  --compilation-config "{\"cudagraph_mode\":\"${FLASHNEXT_CUDAGRAPH_MODE:-PIECEWISE}\",\"cudagraph_capture_sizes\":${CAPTURE_SIZES}}" \
   --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_xml \
   "${EXTRA[@]}" "$@"

@@ -24,8 +24,18 @@ conditions do not qualify our single-GB10, eight-agent, 200k, xhigh workload.
 The checkpoint is downloaded and its LFS hash verified. An isolated
 [V2 adapter](../experiments/dflash/README.md) ports the HC taps and anchor layout
 to the pinned runtime. All 58 checkpoint tensors match the required BF16 shapes;
-K=4, 5, and 7 pass the CPU configuration check. No local DFlash throughput or
-quality result exists yet. Do not enable it merely by changing a model name.
+K=4, 5, and 7 pass the CPU configuration check. Do not enable it merely by
+changing a model name.
+
+The first full-model DFlash run (`dflash-k4-eager`, K=4, eager, BF16 draft,
+FP8 target KV, direct and asynchronous PLE) passed 8/8 short retrievals with
+natural stops. Its all-eight overlap rate was 87.45 tokens/s on retrieval and
+105.99 on the fixed-output stress test. On the natural coding workload it reached
+57.82 tokens/s during overlap with 9,438 of 48,124 drafts accepted (19.6%, about
+1.8 tokens per step). The graph-enabled native MTP-2 run reached 93.02 on its
+coding workload while profiled. Eager execution penalizes DFlash, but its
+acceptance is too low to overcome that with graphs. DFlash is rejected for this
+workload; the run was stopped before retention and tool screens.
 
 Native MTP is the first measured candidate. A draft-only reduced vocabulary
 projection is also staged. It changes proposals, while leaving target logits,
