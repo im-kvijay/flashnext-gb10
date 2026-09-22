@@ -19,6 +19,9 @@ export PYTHONUNBUFFERED=1
 mkdir -p "$FLASHNEXT_PLE_NVME_DIR" "$DATA/cache"
 "$RUNTIME/bin/python" "$ROOT/scripts/reclaim_model_cache.py" "$MODEL" --also-directory "$RUNTIME"
 EXTRA=()
+if [[ -n ${FLASHNEXT_MOE_BACKEND:-} ]]; then
+  EXTRA+=(--moe-backend "$FLASHNEXT_MOE_BACKEND")
+fi
 if [[ -n ${FLASHNEXT_KV_BYTES:-} ]]; then
   EXTRA+=(--kv-cache-memory-bytes "$FLASHNEXT_KV_BYTES")
 fi
@@ -37,6 +40,11 @@ if [[ ${FLASHNEXT_MTP:-0} != 0 ]]; then
   if [[ -n ${FLASHNEXT_DRAFT_VOCAB:-} ]]; then
     export FLASHNEXT_DRAFT_VOCAB
     DRAFT_EXTRA=',"use_local_argmax_reduction":true'
+  fi
+  # The NVIDIA target uses NVFP4 experts but its MTP block uses FP8.
+  # B12x's NVFP4 MoE backend cannot also serve the FP8 draft block.
+  if [[ ${FLASHNEXT_MOE_BACKEND:-} == b12x ]]; then
+    DRAFT_EXTRA+=',"moe_backend":"auto"'
   fi
   EXTRA+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${FLASHNEXT_MTP}${DRAFT_EXTRA}}")
 fi
