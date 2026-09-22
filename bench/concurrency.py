@@ -20,7 +20,10 @@ from transformers import AutoTokenizer
 async def engine_counters(session, url):
     wanted = {'vllm:num_preemptions_total', 'vllm:prefix_cache_queries_total',
               'vllm:prefix_cache_hits_total', 'vllm:prompt_tokens_total',
-              'vllm:generation_tokens_total'}
+              'vllm:generation_tokens_total',
+              'vllm:spec_decode_num_drafts_total',
+              'vllm:spec_decode_num_draft_tokens_total',
+              'vllm:spec_decode_num_accepted_tokens_total'}
     try:
         async with session.get(url+'/metrics',timeout=aiohttp.ClientTimeout(total=10)) as response:
             response.raise_for_status()
@@ -181,7 +184,9 @@ async def main(args):
         overlap_start = max(r['token_events'][0][0] for r in results)
         overlap_end = min(r['token_events'][-1][0] for r in results)
         overlap_seconds = max(0,overlap_end-overlap_start)
-        overlap_tokens = sum(n for r in results for t,n in r['token_events'] if overlap_start <= t <= overlap_end)
+        # Exclude the batch that establishes the interval's start: its
+        # generation occurred before the measured interval began.
+        overlap_tokens = sum(n for r in results for t,n in r['token_events'] if overlap_start < t <= overlap_end)
     summary = {'mode':args.mode,'concurrency':args.concurrency,'input_tokens_each':args.input_tokens,
                'explicit_prefix_priming':args.warm_prefixes,
                'priming_wall_seconds':sum(r['wall_seconds'] for r in priming),
@@ -193,6 +198,9 @@ async def main(args):
                'all_streams_overlap_output_tps':overlap_tokens/overlap_seconds if overlap_seconds else None,
                'peak_overlapping_output_streams':peak,
                'errors':sum(r['error'] is not None for r in results),
+               'naturally_finished_requests':sum(r['finish_reason'] == 'stop' and not r['error'] for r in results),
+               'output_limited_requests':sum(r['finish_reason'] == 'length' for r in results),
+               'forced_post_eos_generation':args.mode == 'performance',
                'retrieval_correct':sum(r['retrieval_correct'] for r in results),
                'release_qualified':False}
     Path(args.output).parent.mkdir(parents=True,exist_ok=True)
