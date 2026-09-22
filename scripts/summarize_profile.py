@@ -33,10 +33,24 @@ for start,end in sorted(intervals):
     else:
         merged.append([start,end])
 span=(merged[-1][1]-merged[0][0]) if merged else 0
+# Attribute idle gaps: which GPU event ended before and started after each gap.
+gpu_events=sorted((e for e in data.get('traceEvents',[]) if e.get('ph')=='X' and e.get('dur',0)>0
+                   and e.get('cat') in {'kernel','gpu_memcpy','gpu_memset'}),key=lambda e:e['ts'])
+gap_groups=defaultdict(lambda:[0,0.0])
+end=None; last=None
+for event in gpu_events:
+    if end is not None and event['ts']-end>200:
+        key=f"{last[:60]} -> {event['name'][:60]}"
+        gap_groups[key][0]+=1
+        gap_groups[key][1]+=event['ts']-end
+    if end is None or event['ts']+event['dur']>end:
+        end=event['ts']+event['dur']; last=event['name']
 busy=sum(end-start for start,end in merged)
 report={'trace':str(path),'scope':'profile diagnostic only; durations do not qualify throughput',
         'gpu_event_span_ms':span/1000,'gpu_busy_union_ms':busy/1000,
         'gpu_event_coverage_fraction':busy/span if span else None,
+        'idle_gaps_over_200us':sorted(({'between':k,'count':n,'total_ms':d/1000}
+                                       for k,(n,d) in gap_groups.items()),key=lambda r:-r['total_ms'])[:15],
         'categories':{}}
 for category in sorted({k[0] for k in groups}):
     rows=[{'name':name,'calls':n,'summed_ms':dur/1000,'mean_us':dur/n}
@@ -46,5 +60,7 @@ for category in sorted({k[0] for k in groups}):
         'summed_ms':sum(r['summed_ms'] for r in rows),'top':rows[:30]}
 Path(a.output).write_text(json.dumps(report,indent=2))
 print(json.dumps({k:v for k,v in report.items() if k!='categories'},indent=2))
+for row in report['idle_gaps_over_200us'][:6]:
+    print(f"idle {row['total_ms']:.1f} ms in {row['count']} gaps: {row['between']}")
 for row in report['categories'].get('kernel',{}).get('top',[])[:12]:
     print(f"{row['summed_ms']:.3f} ms, {row['calls']} calls: {row['name'][:150]}")
