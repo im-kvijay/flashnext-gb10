@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 
 import torch
-from vllm.compilation.breakable_cudagraph import eager_break_during_capture
+from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphCapture, eager_break_during_capture
 
 from .mapped_table import MappedTable
 
@@ -125,7 +125,14 @@ def make_nvme_embedding(upstream, directory):
                 ids = self._host_ids[:ngram_ids.shape[0]]
                 ids.copy_(ngram_ids, non_blocking=True)
                 self._ids_ready.record(torch.cuda.current_stream(self._device))
-                self._pending = self._pool.submit(self._gather_after_ids, ids)
+                if BreakableCUDAGraphCapture.is_active():
+                    # A CUDA call from the worker while the next segment is being
+                    # captured invalidates the capture (global capture mode). Wait
+                    # here, inside the eager break, and give the worker CPU-only work.
+                    self._ids_ready.synchronize()
+                    self._pending = self._pool.submit(self._gather, ids)
+                else:
+                    self._pending = self._pool.submit(self._gather_after_ids, ids)
             else:
                 ids = ngram_ids.to(device="cpu")
                 self._pending = self._pool.submit(self._gather, ids)
