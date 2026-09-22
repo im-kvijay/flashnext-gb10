@@ -29,6 +29,14 @@ threads reached 5 ms on an idle disk. The loader's sequential reads reduce
 random-read capacity to about 12k IOPS, so measurements taken during model
 loading are not representative.
 
+Measured in serving (`pleio-buffered-mtp2`: buffered pread, asynchronous ID
+staging, otherwise the baseline configuration): 134.35 tok/s on short
+retrieval (baseline 127.24), 137.58 on the fixed-output stress interval
+(134.29), and 92.56 / 103.19 on two unprofiled natural coding-workload runs
+(draft acceptance 0.556 / 0.578). The gain is 3-6%, smaller than the profiled
+gap suggested; GPU utilization still dips to 56-96% during coding decode, so
+the remaining idle time has another cause, to be identified by profiling.
+
 `FLASHNEXT_PLE_IO` selects `buffered` (default: pread with random advice,
 page-cache hits stay cheap), `direct` (O_DIRECT) or `mapped` (previous path).
 All three returned identical bytes over 64 real-checkpoint steps including
