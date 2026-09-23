@@ -361,3 +361,40 @@ codebase NLL against 2.84 with FP8 KV, within the target's own run-to-run
 spread. Keys have RMS 7 and max 92, values RMS 1.5 and max 15, so unit scale
 is not the problem. FP8 KV stays in the 8 x 200k profile because BF16 KV for
 eight 200k contexts does not fit next to the weights.
+
+## PLE stall at 8 x 200k: row cache and early prefetch
+
+`FLASHNEXT_PLE_TRACE` recorded every lookup of an 8 x 200k run with the trained
+drafter (`cap200k-trained`, 114.9 tok/s): 509 rows per decode step and a
+36.1 ms mean gather (p90 50.9 ms) while the GPU waits. The rented host's
+container filesystem sits on a loop device in buffered mode
+(`/var/lib/docker-loop.xfs`, `dio=0`), which serves about 12k random reads per
+second at any thread count, buffered or O_DIRECT (`iops2.py`). About 45% of a
+step's rows are n-grams never looked up before in the run, so no cache can
+serve them (`experiments/ple_trace_stats.py`: a row cache of 1-6 GiB reaches
+51-55% decode hits, a page cache of the same size 38-51%).
+
+Two lossless changes, both opt-in:
+
+- `FLASHNEXT_PLE_ROW_CACHE_GIB`: a two-way set-associative cache of 160-byte
+  rows in front of `pread`, which also reads a row repeated within a step once.
+- `FLASHNEXT_PLE_EARLY=1`: after sampling, each request's bonus token and its
+  n-gram context are known, so its row IDs are computed as the next step will
+  compute them and a helper thread reads the rows into the row cache while
+  the drafter runs; the first draft token's rows follow after the first draft
+  step. The step's own lookup is unchanged.
+
+Same primed server (`cap200k-prof`, switched at run time via
+`FLASHNEXT_PLE_CONTROL`), eight 200k contexts, 2048-token continuations:
+
+| Lookup | tok/s | Accepted length |
+|---|---|---|
+| Page cache only, 32 readers | 115.6 | 2.65 |
+| 3 GiB row cache, 64 readers | 121.6 | 2.63 |
+| + early prefetch | 132.7 | 2.63 |
+
+The first measurement after priming (same settings as the last row) was
+125.5 tok/s; later sweep points may benefit from caches warmed by the earlier
+ones. The 200k decode profile with early prefetch shows 93.6% GPU busy, about
+9 ms of idle per step. On a host whose NVMe is not behind a loop device the
+remaining reads take about 1-2 ms.
