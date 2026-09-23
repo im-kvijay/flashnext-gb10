@@ -66,9 +66,9 @@ if [[ ${FLASHNEXT_MTP:-0} != 0 ]]; then
   if [[ ${FLASHNEXT_MTP_INDEX_SHARE:-0} == 1 ]]; then
     DRAFT_EXTRA+=',"index_share_for_mtp_iteration":true'
   fi
-  # The NVIDIA target uses NVFP4 experts but its MTP block uses FP8.
-  # B12x's NVFP4 MoE backend cannot also serve the FP8 draft block.
-  if [[ ${FLASHNEXT_MOE_BACKEND:-} == b12x || ${FLASHNEXT_MOE_BACKEND:-} == flashinfer_b12x ]]; then
+  # The NVIDIA target uses NVFP4 experts but its MTP block uses FP8, so an
+  # explicit NVFP4 MoE backend must not also be forced on the draft block.
+  if [[ -n ${FLASHNEXT_MOE_BACKEND:-} ]]; then
     DRAFT_EXTRA+=',"moe_backend":"auto"'
   fi
   EXTRA+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${FLASHNEXT_MTP}${DRAFT_EXTRA}}")
