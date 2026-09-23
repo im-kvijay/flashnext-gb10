@@ -130,6 +130,10 @@ commands = [
 long_only = os.environ.get('SCREEN_LONG') == '1'
 if os.environ.get('SCREEN_SPEED') == '0':
     commands = []
+for n in filter(None, os.environ.get('SCREEN_SWEEP', '').split(',')):
+    # Aggregate throughput at higher concurrency; the server needs FLASHNEXT_SEQUENCES >= n.
+    commands.append((f'workload-c{n}-4k', ['bench/concurrency.py', '--model', m, '--concurrency', n,
+                                           '--input-tokens', '4096', '--output-tokens', '2048', '--mode', 'workload']))
 if os.environ.get('SCREEN_PROSE') == '1':
     # MiaAI-Lab/sparkDash comparison protocol; see bench/concurrency.py.
     commands.append(('sparkdash-prose-c8', ['bench/concurrency.py', '--model', m, '--input-tokens', '64',
