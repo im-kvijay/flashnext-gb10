@@ -69,6 +69,22 @@ def draft_attention(module, q, k, v, mask, scaling=None, **kw):
 AttentionInterface.register('draft', draft_attention)
 
 
+def quantize_fp8_block(w, block=128):
+    """[N, K] -> (e4m3 [N, K], bf16 scale_inv [ceil(N/128), ceil(K/128)]), the checkpoint's expert format."""
+    N, K = w.shape
+    pn, pk = (-N) % block, (-K) % block
+    blocks = F.pad(w.float(), (0, pk, 0, pn)).view((N + pn) // block, block, (K + pk) // block, block)
+    scale = (blocks.abs().amax(dim=(1, 3)) / 448.0).clamp_min(1e-12).to(torch.bfloat16)
+    q = (blocks / scale.float()[:, None, :, None]).clamp(-448, 448).to(torch.float8_e4m3fn)
+    return q.view(N + pn, K + pk)[:N, :K].contiguous(), scale
+
+
+def dequantize_fp8_block(q, scale_inv, dtype, block=128):
+    N, K = q.shape
+    s = scale_inv.float().repeat_interleave(block, 0)[:N].repeat_interleave(block, 1)[:, :K]
+    return (q.float() * s).to(dtype)
+
+
 def load_sequences(capture_dirs):
     """Join chunk captures into sequences (a sequence restarts at position 0)."""
     sequences, current = [], None
@@ -133,7 +149,7 @@ def kl_and_accept(sample, target_logits, head, vocab_mask, chunk=512):
     loss = 0.0
     hits = []
     for s in range(0, sample.shape[0], chunk):
-        q = (sample[s:s + chunk] @ head.T).float()
+        q = (sample[s:s + chunk].to(head.dtype) @ head.T).float()
         p = target_logits[s:s + chunk]
         loss = loss + F.kl_div(F.log_softmax(q, -1), F.log_softmax(p, -1), log_target=True, reduction='sum')
         draft = q.masked_fill(~vocab_mask, -math.inf).argmax(-1) if vocab_mask is not None else q.argmax(-1)
@@ -184,11 +200,17 @@ def main():
     p.add_argument('--holdout', type=float, default=0.1)
     p.add_argument('--kv-dtype', choices=['bf16', 'fp8'], default='fp8',
                    help='fp8 matches a server run with FLASHNEXT_KV_DTYPE=fp8')
+    p.add_argument('--train-experts', action='store_true',
+                   help='also train the routed experts; exported re-quantized to the checkpoint FP8 block format')
+    p.add_argument('--expert-lr', type=float, default=None, help='defaults to lr / 4')
     p.add_argument('--output', required=True)
     a = p.parse_args()
     torch.manual_seed(0)
     config = text_config(a.weights)
     block, embed, head = load_mtp(a.weights)
+    # FP32 master weights: an AdamW step (about lr) is below a BF16 ulp for most
+    # weights, so BF16 parameters would silently drop most updates.
+    block.float()
     block.config._attn_implementation = 'draft'
     DraftContext.kv_fp8 = a.kv_dtype == 'fp8'
     embed.requires_grad_(False)
@@ -206,12 +228,17 @@ def main():
     held, train = windows(sequences[:split], a.window), windows(sequences[split:], a.window)
     print(f'{len(sequences)} sequences: {len(train)} train windows, {len(held)} held-out', flush=True)
     for name, param in block.named_parameters():
-        param.requires_grad_('mlp.experts.' not in name)
+        param.requires_grad_(a.train_experts or 'mlp.experts.' not in name)
     trainable = [q for q in block.parameters() if q.requires_grad]
+    expert_params = [q for n, q in block.named_parameters() if q.requires_grad and 'mlp.experts.' in n]
+    other_params = [q for n, q in block.named_parameters() if q.requires_grad and 'mlp.experts.' not in n]
     print(f'trainable parameters: {sum(q.numel() for q in trainable) / 1e6:.1f}M', flush=True)
     report = dict(before=evaluate(block, embed, head, mixer, held, a.steps, vocab_mask))
     print('before', report['before'], flush=True)
-    optimizer = torch.optim.AdamW(trainable, lr=a.lr, weight_decay=0.0, betas=(0.9, 0.95))
+    groups = [dict(params=other_params, lr=a.lr)]
+    if expert_params:
+        groups.append(dict(params=expert_params, lr=a.expert_lr or a.lr / 4))
+    optimizer = torch.optim.AdamW(groups, weight_decay=0.0, betas=(0.9, 0.95))
     total = a.epochs * len(train)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, lambda i: min(1.0, (i + 1) / 20) * 0.5 * (1 + math.cos(math.pi * min(i, total) / total)))
@@ -240,6 +267,20 @@ def main():
     state = {f'mtp.{k.replace("layer.", "layers.0.", 1)}': v.detach().to(torch.bfloat16).cpu()
              for k, v in block.state_dict().items()
              if 'mlp.experts.' not in k and not k.startswith('rotary.')}
+    if a.train_experts:
+        experts = block.layer.mlp.experts
+        with torch.no_grad():
+            half = experts.gate_up_proj.shape[1] // 2
+            for e in range(experts.gate_up_proj.shape[0]):
+                for proj, w in (('gate_proj', experts.gate_up_proj[e, :half]), ('up_proj', experts.gate_up_proj[e, half:]),
+                                ('down_proj', experts.down_proj[e])):
+                    q, scale_inv = quantize_fp8_block(w)
+                    state[f'mtp.layers.0.mlp.experts.{e}.{proj}.weight'] = q.cpu()
+                    state[f'mtp.layers.0.mlp.experts.{e}.{proj}.weight_scale_inv'] = scale_inv.cpu()
+                    # Evaluate what will be served: the re-quantized weights.
+                    w.copy_(dequantize_fp8_block(q, scale_inv, w.dtype))
+        report['after_fp8_experts'] = evaluate(block, embed, head, mixer, held, a.steps, vocab_mask)
+        print('after (FP8 experts)', report['after_fp8_experts'], flush=True)
     torch.save(state, out / 'mtp_trained.pt')
     (out / 'report.json').write_text(json.dumps(report, indent=2))
 

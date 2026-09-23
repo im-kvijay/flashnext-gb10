@@ -54,6 +54,8 @@ class MTPBlock(nn.Module):
         """multi_hidden [B, T, 4H], token_embeds [B, T, H], positions [B, T] -> (sample [B,T,H], multi [B,T,4H])."""
         B, T, _ = token_embeds.shape
         n, H = self.config.hc_count, self.config.hidden_size
+        dtype = self.fc_hidden.weight.dtype  # FP32 when training with master weights
+        multi_hidden, token_embeds = multi_hidden.to(dtype), token_embeds.to(dtype)
         e = self.fc_embedding(self.pre_fc_norm_embedding(token_embeds))
         h = self.fc_hidden(self.pre_fc_norm_hidden(multi_hidden).view(B, T, n, H))
         x = (h + e.unsqueeze(-2)).flatten(-2)
