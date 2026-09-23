@@ -130,6 +130,10 @@ commands = [
 long_only = os.environ.get('SCREEN_LONG') == '1'
 if os.environ.get('SCREEN_SPEED') == '0':
     commands = []
+if os.environ.get('SCREEN_PROSE') == '1':
+    # MiaAI-Lab/sparkDash comparison protocol; see bench/concurrency.py.
+    commands.append(('sparkdash-prose-c8', ['bench/concurrency.py', '--model', m, '--input-tokens', '64',
+                                            '--output-tokens', '600', '--mode', 'sparkdash-prose']))
 if long_only:
     # Capacity qualification only: eight distinct 200k-token codebase contexts.
     commands = [('codebase-c8-200k', ['bench/concurrency.py', '--model', m, '--input-tokens', '200000',

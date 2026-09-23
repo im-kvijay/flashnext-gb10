@@ -67,7 +67,19 @@ def codebase_ids(tokenizer, root, count):
     raise RuntimeError(f"corpus {root} has fewer than {count} tokens")
 
 
-def make_prompt(tokenizer, count, agent, mode="retrieval", corpus_root=None):
+# sparkDash's decode "prose" protocol (MiaAI-Lab's published 8-stream figure):
+# one prompt with a stream suffix, thinking off. Near-identical streams share
+# expert routing, so this reads fewer weights per step than distinct agents.
+SPARKDASH_PROSE = ("Write a detailed step-by-step explanation of how a hash map works, "
+                   "including collision handling, resizing, and time complexity. Be thorough.")
+
+
+def make_prompt(tokenizer, count, agent, mode="retrieval", corpus_root=None, concurrency=8):
+    if mode == "sparkdash-prose":
+        text = tokenizer.apply_chat_template(
+            [{"role": "user", "content": f"{SPARKDASH_PROSE} (stream {agent + 1}/{concurrency})"}],
+            tokenize=False, add_generation_prompt=True, enable_thinking=False)
+        return tokenizer.encode(text, add_special_tokens=False), None
     rng = random.Random(7919 + agent)
     secret = f"{rng.randrange(10**9, 10**10)}"
     prefix = tokenizer.encode(f"Agent {agent}: independent record collection.\n", add_special_tokens=False)
@@ -181,7 +193,7 @@ async def run_one(session, url, index, prompt, expected, args, barrier):
 
 async def main(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    prompts = [make_prompt(tokenizer, args.input_tokens, i, args.mode, args.corpus_root) for i in range(args.concurrency)]
+    prompts = [make_prompt(tokenizer, args.input_tokens, i, args.mode, args.corpus_root, args.concurrency) for i in range(args.concurrency)]
     barrier = asyncio.Event()
     # vLLM includes prompt_token_ids in the first SSE event when token IDs are
     # requested. A 200k prompt exceeds aiohttp's default line buffer.
@@ -261,7 +273,7 @@ if __name__ == '__main__':
     p.add_argument('--concurrency',type=int,default=8)
     p.add_argument('--input-tokens',type=int,default=200000)
     p.add_argument('--output-tokens',type=int,default=8192)
-    p.add_argument('--mode',choices=['retrieval','performance','workload','codebase'],default='retrieval')
+    p.add_argument('--mode',choices=['retrieval','performance','workload','codebase','sparkdash-prose'],default='retrieval')
     p.add_argument('--corpus-root',help='site-packages directory holding the codebase-mode source trees')
     p.add_argument('--timeout',type=int,default=7200)
     p.add_argument('--output',required=True)
