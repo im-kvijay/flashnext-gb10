@@ -44,6 +44,9 @@ def register():
         # After W8A16: only layers still on the plain BF16 method are switched.
         from .dense_bf16 import register_dense_bf16
         register_dense_bf16()
+    if os.environ.get("FLASHNEXT_GDN_REPLAY") == "1":
+        from .gdn_replay import register_gdn_replay
+        register_gdn_replay()
     if os.environ.get("FLASHNEXT_COUNT_EXPERTS"):
         from .expert_count import register_expert_count
         register_expert_count(os.environ["FLASHNEXT_COUNT_EXPERTS"])
