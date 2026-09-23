@@ -256,3 +256,51 @@ projections. `FLASHNEXT_DENSE_W8A16=1` covers GDN, QSA and shared experts;
 113.34 tok/s over 117 s with all eight 200k streams decoding, mean accepted
 length 2.69, no errors, host available memory at least 10.4 GiB (BF16: 101.64,
 2.51, about 7.5 GiB).
+
+## Run-to-run divergence traced to FP4 activation quantization in the MoE
+
+The "fidelity noise floor" above is not benign. `bench/determinism.py` scores
+the same 2,304-token source file three times, alone, on one server. In every
+configuration tried (production profile; eager without MTP, with BF16 KV,
+FP32 GDN state and BF16 dense; plus PLE zeroed, state packing off, prefix
+caching off) about 35% of positions move by more than 0.5 nats between
+identical requests (max 11-18 nats), while the model's own greedy
+continuations move at about 0.5% of positions. The same code span also scores
+worse with more context (span at 512: 1.37 nats with the full 768-token
+prefix, 0.62 with 128 tokens of context), and short-context scores of that
+span range from 0.6 to 6.9 nats across runs.
+
+Captures of every sub-module in layers 0-3 (`flashnext_gb10/module_capture.py`,
+`experiments/module_diff.py`) of two identical requests:
+
+| Module | Relative output difference (mean / max) |
+|---|---|
+| L0 GDN, L0 router | 0 (bitwise identical) |
+| L0 routed MoE (identical input) | 6.8e-5 / 1.7e-3 |
+| L1 routed MoE (input differs by 0.37%) | 4.6e-2 / 2.5e-1 |
+| L3 routed MoE | 1.0e-1 / 3.4e-1 |
+
+The GDN prefill kernels (FlashInfer and FLA) match an FP32 recurrence to
+0.3% and are bitwise repeatable (`experiments/gdn_prefill_check.py`), and QSA
+selections are complete below the budget (`experiments/qsa_check.py`). The
+amplification is in the routed MoE and is not explained by routing: tokens
+whose top-10 set is unchanged move by 4.5% on average. The served NVFP4 MoE
+backend (`FLASHINFER_CUTLASS`) quantizes activations to FP4, so a 0.4%
+input change flips FP4 rounding widely; across 40+ MoE layers this compounds
+into the observed divergence.
+
+`experiments/moe_reference.py` evaluates a layer's MoE in FP32 from the
+checkpoint (dequantized NVFP4 weights, router, gated shared expert) on the
+exact inputs vLLM saw, with and without an emulation of NVFP4 activation
+quantization (static global scale, E4M3 scale per 16, E2M1 round-to-nearest):
+
+| Layer | Served vs FP32 (W4A16) | W4A4 emulation vs FP32 | Served run-to-run | FP32 run-to-run | Input run-to-run |
+|---|---|---|---|---|---|
+| 1 | 8.1% | 7.5% | 4.6% | 0.52% | 0.37% |
+| 3 | 10.7% | 9.4% | 10.0% | 3.6% | 2.3% |
+
+The kernel is correct for W4A4; FP4 activations themselves inject 7-10%
+error into every routed-MoE output, which the FP32 model does not amplify
+but the served one does. NVFP4 weights with BF16 activations (Marlin, W4A16)
+remove that error at unchanged decode speed (`m1-marlin`: workload 120/128,
+prose 145 tok/s).

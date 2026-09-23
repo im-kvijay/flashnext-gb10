@@ -40,6 +40,15 @@ def register():
     if os.environ.get("FLASHNEXT_COUNT_EXPERTS"):
         from .expert_count import register_expert_count
         register_expert_count(os.environ["FLASHNEXT_COUNT_EXPERTS"])
+    if os.environ.get("FLASHNEXT_CAPTURE_MTP_DIR"):
+        from .mtp_capture import register_mtp_capture
+        register_mtp_capture(os.environ["FLASHNEXT_CAPTURE_MTP_DIR"])
+    if os.environ.get("FLASHNEXT_CAPTURE_QSA_DIR"):
+        from .qsa_capture import register_qsa_capture
+        register_qsa_capture(os.environ["FLASHNEXT_CAPTURE_QSA_DIR"])
+    if os.environ.get("FLASHNEXT_CAPTURE_MODULES_DIR"):
+        from .module_capture import register_module_capture
+        register_module_capture(os.environ["FLASHNEXT_CAPTURE_MODULES_DIR"])
     if os.environ.get("FLASHNEXT_PACK_PLE_STATE") == "1":
         from .cache_packing import register_cache_packing
         register_cache_packing()

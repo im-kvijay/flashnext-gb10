@@ -168,6 +168,10 @@ def make_nvme_embedding(upstream, directory):
             if self._copy_recorded:
                 # The previous H2D copy must finish before its staging rows are reused.
                 self._copy_done.synchronize()
+            if os.environ.get('FLASHNEXT_PLE_ZERO') == '1':
+                # Diagnostic ablation only: the model without its n-gram rows.
+                self._prefetch_buffer[:count].zero_()
+                return
             ids = self._host_ids[:count]
             ids.copy_(ngram_ids, non_blocking=True)
             stream = torch.cuda.current_stream(self._device)
