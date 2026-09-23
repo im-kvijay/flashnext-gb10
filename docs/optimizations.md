@@ -162,6 +162,28 @@ growth is prefill temporaries that scale with chunk size times context length
 and expandable allocator segments. `FLASHNEXT_MIN_AVAILABLE_GIB` sets the
 supervisor floor.
 
+Without prefix priming the scheduler prefills one or two long prompts at a
+time, so early agents finish before late ones start and eight-way decode is
+never measured. That run (`cap200k-2`) did confirm the memory settings: host
+available memory stayed near 8 GiB (minimum 7.5) through the 200k prefills.
+
+Demonstrated (`cap200k-warm`, `profiles/gb10-8x200k.env`: full-graph BF16
+stack, 24.5 GiB FP8 KV, 1024-token prefill chunks, expandable segments, 6 GiB
+floor): eight distinct 200k-token codebase contexts primed through the prefix
+cache (170-217 s each, about 1,000 prefill tokens/s), then eight simultaneous
+2048-token continuations. 101.64 tok/s over the 148 s interval in which all
+eight streams decoded (15,024 tokens), mean accepted length 2.51, no errors,
+host memory above the floor throughout. At 4k context the same stack gives
+104.5-109.1, so 200k context costs only a few percent of decode speed.
+
+## FlashInfer b12x fused MoE (not usable at this memory budget)
+
+`FLASHNEXT_MOE_BACKEND=flashinfer_b12x` JIT-compiles CuTe-DSL kernels during
+warmup and on first requests of new token counts. Each compile needs several
+GiB of host memory; three launches (`s4-b12x`, `s4c-b12x`, plus one that set
+too small a KV cache for a 213k context) tripped the 8 GiB supervisor floor
+before a measurement. It would need an offline kernel pre-build to evaluate.
+
 ## Quality measurement
 
 `bench/fidelity.py` replays 16 fixed sequences (eight recorded coding

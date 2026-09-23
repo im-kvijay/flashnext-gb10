@@ -58,6 +58,25 @@ virtual environment path; use that environment's Python for the benchmark tools.
 The server listens on localhost:8000 and uses the OpenAI-compatible API. This
 development setup is reproducible, but has not met the release requirements.
 
+## Recommended profile: eight agents at 200k
+
+`profiles/gb10-8x200k.env` is the fastest configuration that has passed the
+fidelity screen and the eight-way 200k capacity run:
+
+```bash
+bash scripts/bootstrap.sh
+set -a; . profiles/gb10-8x200k.env; set +a
+.venv/bin/python scripts/supervise.py --receipt results/serve-$(date +%s).jsonl
+```
+
+Measured at eight concurrent streams on one GB10: 101.6 aggregate output
+tokens/s with eight distinct 200k-token contexts, 104.5-109.1 on a natural
+coding workload at 4k, 171.6 on short retrieval. Dense weights, experts and
+the chat template are unchanged; the GDN recurrent state is stored in BF16
+instead of FP32, and the KV cache is FP8. Weight loading takes about 15
+minutes. A 200k prompt prefills in about 3 minutes; later turns of the same
+conversation reuse the prefix cache. Details: `docs/optimizations.md`.
+
 For development runs use the memory supervisor, with a new receipt filename:
 
 ```bash
