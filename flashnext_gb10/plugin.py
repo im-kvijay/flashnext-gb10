@@ -40,6 +40,10 @@ def register():
             raise RuntimeError("FLASHNEXT_DENSE_W8A16 and FLASHNEXT_DENSE_FP8 are alternatives")
         from .dense_w8a16 import register_dense_w8a16
         register_dense_w8a16()
+    if os.environ.get("FLASHNEXT_DENSE_BF16") == "1":
+        # After W8A16: only layers still on the plain BF16 method are switched.
+        from .dense_bf16 import register_dense_bf16
+        register_dense_bf16()
     if os.environ.get("FLASHNEXT_COUNT_EXPERTS"):
         from .expert_count import register_expert_count
         register_expert_count(os.environ["FLASHNEXT_COUNT_EXPERTS"])
