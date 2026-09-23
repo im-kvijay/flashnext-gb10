@@ -33,7 +33,7 @@ env.update(FLASHNEXT_RUNTIME=runtime, FLASHNEXT_DATA=str(data), FLASHNEXT_MODEL=
            FLASHNEXT_PLE_DIRECT='1', FLASHNEXT_MEMORY_FRACTION='0.60', FLASHNEXT_KV_BYTES=str(6 * 1024**3),
            FLASHNEXT_KV_DTYPE='fp8', FLASHNEXT_TEXT_ONLY='1', FLASHNEXT_MTP='2',
            FLASHNEXT_DRAFT_VOCAB=os.environ.get('FLASHNEXT_DRAFT_VOCAB', str(data / 'draft-vocab-public-vllm.json')), FLASHNEXT_PACK_PLE_STATE='1',
-           FLASHNEXT_DIAGNOSTICS_DIR=str(out))
+           FLASHNEXT_DIAGNOSTICS_DIR=str(out), FLASHNEXT_PLE_CONTROL=str(out / 'ple-control.json'))
 env.update(overrides)
 # More concurrent eval sequences need proportionally more KV blocks (each long
 # reasoning request holds about 18 blocks of 45 MB with MTP-3 state slots).
@@ -156,9 +156,19 @@ if os.environ.get('SCREEN_SUITE') == '1':
     commands.append(('suite', ['bench/suite.py', '--data', os.environ.get('FLASHNEXT_EVAL_DATA', str(root / 'data/eval'))]))
 if os.environ.get('SCREEN_ROUTING') == '1':
     commands.append(('routing-c8', ['bench/routing_probe.py', '--model', m]))
+# SCREEN_KNOBS=<json file>: [[name, {"row_cache_gib": x, "io_threads": n}], ...]. Each setting is
+# written to the PLE control file and the first measurement is repeated on the primed server.
+for knob_name, settings in json.loads(Path(os.environ['SCREEN_KNOBS']).read_text()) if os.environ.get('SCREEN_KNOBS') else []:
+    commands.append((f'knobs-{knob_name}', settings))
+    commands.append((f'{commands[0][0]}-{knob_name}', commands[0][1]))
 (out / 'server-args.json').write_text(json.dumps(server_args) + '\n')
 results = []
 for name, command in commands:
+    if isinstance(command, dict):
+        (out / 'ple-control.json').write_text(json.dumps(command))
+        print('KNOBS', name, json.dumps(command), flush=True)
+        time.sleep(3)
+        continue
     print('RUN', name, flush=True)
     with (out / (name + '.log')).open('x') as log:
         bench = subprocess.Popen([python, *command, '--output', str(out / (name + '.json'))], cwd=root,

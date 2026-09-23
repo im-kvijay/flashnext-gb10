@@ -1,6 +1,7 @@
 """Byte-exact CPU lookup directly from safetensors mappings, with no table copy."""
 import ctypes
 import hashlib
+import json
 import mmap
 import os
 from pathlib import Path
@@ -102,6 +103,13 @@ class CheckpointShards:
         self.row_cache_gib=float(os.environ.get('FLASHNEXT_PLE_ROW_CACHE_GIB','0'))
         self._row_cache=None
         self._calls=0
+        # FLASHNEXT_PLE_CONTROL names a JSON file ({"row_cache_gib": x,
+        # "io_threads": n}) re-read about once a second, so one primed
+        # long-context server can measure several lookup settings.
+        self._control=os.environ.get('FLASHNEXT_PLE_CONTROL')
+        self._control_checked=0.0
+        self._control_mtime=None
+        self._cache_enabled=True
 
     def add(self,start,tensor):
         if self.sealed:
@@ -168,6 +176,31 @@ class CheckpointShards:
                     'FlashNext PLE row cache: %.2f GiB, %d rows', self.row_cache_gib, rows)
         self.sealed=True
 
+    def _apply_control(self):
+        import time
+        now=time.monotonic()
+        if now-self._control_checked<1.0:
+            return
+        self._control_checked=now
+        try:
+            mtime=os.stat(self._control).st_mtime_ns
+        except OSError:
+            return
+        if mtime==self._control_mtime:
+            return
+        self._control_mtime=mtime
+        settings=json.loads(Path(self._control).read_text())
+        if 'io_threads' in settings:
+            self.io_threads=max(1,min(128,int(settings['io_threads'])))
+        gib=float(settings.get('row_cache_gib',self.row_cache_gib))
+        self._cache_enabled=gib>0
+        if gib>0 and not self._row_cache and self.direct_io:
+            self.row_cache_gib=gib
+            self._row_cache=self._dll.flashnext_row_cache_create(int(gib*2**30)//(self.width+8),self.width)
+        from vllm.logger import init_logger
+        init_logger('vllm.flashnext.ple').info('FlashNext PLE control %s: io_threads=%d row_cache=%s',
+                                                  settings,self.io_threads,bool(self._row_cache and self._cache_enabled))
+
     def row_cache_stats(self):
         stats=(ctypes.c_int64*3)()
         self._dll.flashnext_row_cache_stats(self._row_cache,stats)
@@ -184,7 +217,9 @@ class CheckpointShards:
         if (output.device.type!='cpu' or output.dtype!=torch.uint8 or not output.is_contiguous()
                 or output.numel()!=flat.numel()*self.width):
             raise ValueError('Direct PLE output buffer has wrong device, dtype, size or layout')
-        if self._row_cache:
+        if self._control:
+            self._apply_control()
+        if self._row_cache and self._cache_enabled:
             failures=self._dll.flashnext_cached_pread_shards(
                 self._row_cache,self._fd_array,self._bases,self._starts,self._ends,len(self.parts),
                 flat.data_ptr(),flat.numel(),valid_rows,self.width,output.data_ptr(),

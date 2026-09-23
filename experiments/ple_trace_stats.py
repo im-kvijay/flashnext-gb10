@@ -19,6 +19,8 @@ def records(path):
     while offset + 32 <= len(data):
         count, heads, gather_ns, wall_ns = struct.unpack_from('<qqqq', data, offset)
         offset += 32
+        if offset + count * heads * 8 > len(data):
+            break  # last record cut off when the server stopped
         ids = np.frombuffer(data, dtype=np.int64, count=count * heads, offset=offset)
         offset += count * heads * 8
         yield count, heads, gather_ns, wall_ns, ids
