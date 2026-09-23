@@ -7,6 +7,7 @@ GEMM is a weight-streaming Triton kernel tuned for decode batches on GB10.
 Routers, gates, the indexer, embeddings, lm_head and the MTP block stay BF16.
 The checkpoint is unchanged.
 """
+import os
 import re
 
 import torch
@@ -17,6 +18,11 @@ TARGETS = re.compile(
     r'(?<!mtp)\.layers\.\d+\.(linear_attn\.(in_proj_qkvz|in_proj_qkv|in_proj_z|out_proj)'
     r'|self_attn\.(qkv_proj|q_proj|k_proj|v_proj|o_proj)'
     r'|mlp\.shared_expert\.(gate_up_proj|down_proj))$')
+# Hyperconnection mixing projections: FLASHNEXT_W8A16_HC=1 (separately gated;
+# their outputs feed residual-stream gates).
+HC_TARGETS = re.compile(
+    r'(?<!mtp)\.layers\.\d+\.(attn|mlp)_hyper_connection\.'
+    r'(input_mix_weight_down_block_inject|input_mix_weight_down|input_mix_weight_up)$')
 
 # Measured on GB10 at M=32 (CUDA graph replay, weights larger than L2):
 # (N, K) -> (BLOCK_N, SPLIT_K, num_warps, num_stages); BLOCK_K is 128.
@@ -26,6 +32,9 @@ DECODE_CONFIGS = {
     (13312, 2560): (32, 4, 4, 5),
     (1280, 2560): (32, 1, 8, 5),
     (2560, 640): (32, 1, 8, 3),
+    (336, 10240): (64, 8, 4, 3),
+    (320, 10240): (64, 8, 4, 3),
+    (10240, 320): (64, 1, 4, 3),
 }
 
 
@@ -33,7 +42,7 @@ DECODE_CONFIGS = {
 def _w8a16_kernel(a_ptr, w_ptr, s_ptr, c_ptr, M, N, K, K_PER_SPLIT,
                   stride_am, stride_wn, stride_sn, stride_cm,
                   BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
-                  ATOMIC: tl.constexpr):
+                  SCALE_K: tl.constexpr, ATOMIC: tl.constexpr):
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
     pid_m = tl.program_id(2)
@@ -47,7 +56,7 @@ def _w8a16_kernel(a_ptr, w_ptr, s_ptr, c_ptr, M, N, K, K_PER_SPLIT,
                     mask=offs_m[:, None] < M, other=0.0)
         w = tl.load(w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :],
                     mask=offs_n[:, None] < N, other=0.0)
-        s = tl.load(s_ptr + (offs_n // 128) * stride_sn + (k_start + k0) // 128,
+        s = tl.load(s_ptr + (offs_n // 128) * stride_sn + (k_start + k0) // SCALE_K,
                     mask=offs_n < N, other=0.0)
         acc += tl.dot(a, tl.trans(w.to(tl.bfloat16))) * s[None, :]
     mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
@@ -61,24 +70,26 @@ def _w8a16_kernel(a_ptr, w_ptr, s_ptr, c_ptr, M, N, K, K_PER_SPLIT,
 def w8a16_gemm(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     M, K = x.shape
     N = weight.shape[0]
+    scale_k = K // scale.shape[1]
     if M <= 32:
         block_n, split_k, warps, stages = DECODE_CONFIGS.get((N, K), (64, 1, 4, 4))
         block_m = 16 if M <= 16 else 32
     else:
         # Prefill chunks are compute-bound; a square-ish tile is enough.
         block_n, split_k, warps, stages, block_m = 128, 1, 8, 3, 64
-    if K % (128 * split_k):
+    block_k = min(128, scale_k)
+    if K % (block_k * split_k):
         split_k = 1
     grid = (triton.cdiv(N, block_n), split_k, triton.cdiv(M, block_m))
     if split_k > 1:
         acc = torch.zeros((M, N), dtype=torch.float32, device=x.device)
         _w8a16_kernel[grid](x, weight, scale, acc, M, N, K, K // split_k, x.stride(0), weight.stride(0),
-                            scale.stride(0), acc.stride(0), BLOCK_M=block_m, BLOCK_N=block_n, BLOCK_K=128,
-                            ATOMIC=True, num_warps=warps, num_stages=stages)
+                            scale.stride(0), acc.stride(0), BLOCK_M=block_m, BLOCK_N=block_n, BLOCK_K=block_k,
+                            SCALE_K=scale_k, ATOMIC=True, num_warps=warps, num_stages=stages)
         return acc.to(torch.bfloat16)
     out = torch.empty((M, N), dtype=torch.bfloat16, device=x.device)
     _w8a16_kernel[grid](x, weight, scale, out, M, N, K, K, x.stride(0), weight.stride(0), scale.stride(0),
-                        out.stride(0), BLOCK_M=block_m, BLOCK_N=block_n, BLOCK_K=128, ATOMIC=False,
+                        out.stride(0), BLOCK_M=block_m, BLOCK_N=block_n, BLOCK_K=block_k, SCALE_K=scale_k, ATOMIC=False,
                         num_warps=warps, num_stages=stages)
     return out
 
@@ -88,13 +99,17 @@ def _w8a16_fake(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> t
 
 
 def quantize_block_fp8(weight: torch.Tensor):
-    """[N, K] -> (e4m3 [N, K], fp32 [ceil(N/128), K/128]); scale = block amax / 448."""
+    """[N, K] -> (e4m3 [N, K], fp32 [ceil(N/128), K/bk]); bk is 128, or 64 when K is not a multiple of 128.
+
+    scale = block amax / 448 over 128 x bk blocks.
+    """
     N, K = weight.shape
-    if K % 128:
-        raise ValueError(f'W8A16 needs K divisible by 128, got {K}')
+    bk = 128 if K % 128 == 0 else 64
+    if K % bk:
+        raise ValueError(f'W8A16 needs K divisible by 64, got {K}')
     pad = (-N) % 128
     padded = torch.nn.functional.pad(weight.float(), (0, 0, 0, pad))
-    blocks = padded.view(-1, 128, K // 128, 128)
+    blocks = padded.view(-1, 128, K // bk, bk)
     scale = blocks.abs().amax(dim=(1, 3)).clamp_min(1e-12) / 448.0
     q = (blocks / scale[:, None, :, None]).clamp(-448, 448).to(torch.float8_e4m3fn)
     return q.view(-1, K)[:N].contiguous(), scale.contiguous()
@@ -131,10 +146,12 @@ def register_dense_w8a16():
             return out.reshape(*shape[:-1], out.shape[-1])
 
     original = ModelOptMixedPrecisionConfig.get_quant_method
+    hc = os.environ.get('FLASHNEXT_W8A16_HC') == '1'
 
     def get_quant_method(self, layer, prefix):
         if (isinstance(layer, LinearBase) and not prefix.startswith('mtp')
-                and '.mtp.' not in prefix and TARGETS.search(prefix)):
+                and '.mtp.' not in prefix
+                and (TARGETS.search(prefix) or (hc and HC_TARGETS.search(prefix)))):
             logger.info('FlashNext dense W8A16: %s', prefix)
             return W8A16LinearMethod()
         return original(self, layer, prefix)
