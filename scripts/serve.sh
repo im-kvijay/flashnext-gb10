@@ -56,6 +56,8 @@ fi
 if [[ ${FLASHNEXT_MTP:-0} != 0 ]]; then
   DRAFT_EXTRA=""
   if [[ -n ${FLASHNEXT_DRAFT_VOCAB:-} ]]; then
+    # Profiles name the vocabulary relative to the repository root.
+    if [[ $FLASHNEXT_DRAFT_VOCAB != /* ]]; then FLASHNEXT_DRAFT_VOCAB=$ROOT/$FLASHNEXT_DRAFT_VOCAB; fi
     export FLASHNEXT_DRAFT_VOCAB
     DRAFT_EXTRA=',"use_local_argmax_reduction":true'
   fi

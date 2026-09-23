@@ -133,7 +133,7 @@ if os.environ.get('SCREEN_SPEED') == '0':
 if long_only:
     # Capacity qualification only: eight distinct 200k-token codebase contexts.
     commands = [('codebase-c8-200k', ['bench/concurrency.py', '--model', m, '--input-tokens', '200000',
-                                      '--output-tokens', '2048', '--mode', 'codebase', '--corpus-root', corpus])]
+                                      '--output-tokens', '2048', '--mode', 'codebase', '--corpus-root', corpus, '--warm-prefixes'])]
 if os.environ.get('SCREEN_QUALITY', '1') == '1' and not long_only:
     commands += [
         ('retention', ['bench/retention.py', '--model', m, '--label', label,
