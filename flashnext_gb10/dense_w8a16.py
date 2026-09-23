@@ -23,6 +23,11 @@ TARGETS = re.compile(
 HC_TARGETS = re.compile(
     r'(?<!mtp)\.layers\.\d+\.(attn|mlp)_hyper_connection\.'
     r'(input_mix_weight_down_block_inject|input_mix_weight_down|input_mix_weight_up)$')
+# MTP draft block: FLASHNEXT_W8A16_MTP=1. Draft proposals only; verified outputs are unchanged.
+MTP_TARGETS = re.compile(
+    r'^mtp\.(fc_embedding|fc_hidden|layers\.\d+\.(self_attn\.(qkv_proj|q_proj|k_proj|v_proj|o_proj)'
+    r'|mlp\.shared_expert\.(gate_up_proj|down_proj)'
+    r'|(attn|mlp)_hyper_connection\.(input_mix_weight_down_block_inject|input_mix_weight_down|input_mix_weight_up)))$')
 
 # Measured on GB10 at M=32 (CUDA graph replay, weights larger than L2):
 # (N, K) -> (BLOCK_N, SPLIT_K, num_warps, num_stages); BLOCK_K is 128.
@@ -147,11 +152,13 @@ def register_dense_w8a16():
 
     original = ModelOptMixedPrecisionConfig.get_quant_method
     hc = os.environ.get('FLASHNEXT_W8A16_HC') == '1'
+    mtp = os.environ.get('FLASHNEXT_W8A16_MTP') == '1'
 
     def get_quant_method(self, layer, prefix):
-        if (isinstance(layer, LinearBase) and not prefix.startswith('mtp')
-                and '.mtp.' not in prefix
-                and (TARGETS.search(prefix) or (hc and HC_TARGETS.search(prefix)))):
+        is_mtp = prefix.startswith('mtp') or '.mtp.' in prefix
+        if isinstance(layer, LinearBase) and (
+                (not is_mtp and (TARGETS.search(prefix) or (hc and HC_TARGETS.search(prefix))))
+                or (is_mtp and mtp and MTP_TARGETS.search(prefix[prefix.index('mtp'):]))):
             logger.info('FlashNext dense W8A16: %s', prefix)
             return W8A16LinearMethod()
         return original(self, layer, prefix)
