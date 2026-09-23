@@ -68,7 +68,11 @@ if [[ ${FLASHNEXT_MTP:-0} != 0 ]]; then
   fi
   # The NVIDIA target uses NVFP4 experts but its MTP block uses FP8, so an
   # explicit NVFP4 MoE backend must not also be forced on the draft block.
-  if [[ -n ${FLASHNEXT_MOE_BACKEND:-} ]]; then
+  # FLASHNEXT_DRAFT_MOE_BACKEND picks the draft block's FP8 MoE backend
+  # (draft proposals only; verification is unchanged).
+  if [[ -n ${FLASHNEXT_DRAFT_MOE_BACKEND:-} ]]; then
+    DRAFT_EXTRA+=",\"moe_backend\":\"${FLASHNEXT_DRAFT_MOE_BACKEND}\""
+  elif [[ -n ${FLASHNEXT_MOE_BACKEND:-} ]]; then
     DRAFT_EXTRA+=',"moe_backend":"auto"'
   fi
   EXTRA+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${FLASHNEXT_MTP}${DRAFT_EXTRA}}")
