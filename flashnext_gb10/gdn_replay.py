@@ -31,6 +31,9 @@ from triton.language.extra import libdevice
 
 MAGIC = 0x46_4E_52_50  # 'FNRP'
 MAX_TOKENS = 8
+# Value rows per program. Each block keeps its own replay record; four records of
+# MAX_TOKENS keys, values and gates fit in one head's 32 KB of the second slot.
+BLOCK_V = 32
 
 
 @triton.jit
@@ -63,30 +66,42 @@ def _replay(h, rec, count, K: tl.constexpr, V: tl.constexpr, MAXT: tl.constexpr)
 
 
 @triton.jit
+def _record(state, slot, slot_stride, vh, vb, V: tl.constexpr, K: tl.constexpr, BV: tl.constexpr,
+            MAXT: tl.constexpr):
+    """fp32 view of value block vb's replay record and its meta words.
+
+    The record lies inside the bytes of block vb's own state rows in (slot, head), so
+    a program that writes its rows as state (materialize) only overwrites its own record.
+    """
+    tl.static_assert(MAXT * (K + BV + 2) + 8 <= BV * K // 2)
+    base = (state + slot.to(tl.int64) * slot_stride + vh * V * K).to(tl.pointer_type(tl.float32)) + vb * (BV * K // 2)
+    return base, base.to(tl.pointer_type(tl.int32)) + MAXT * (K + BV + 2)
+
+
+@triton.jit
 def _gdn_replay_decode_kernel(
         qkv, qkv_row, a, a_row, b, b_row, a_log, dt_bias,
         indices, indices_row, cu_seqlens, accepted_ptr,
-        state, slot_stride, gate, gate_row, norm_weight, out,
-        H, HV, scale, eps,
-        K: tl.constexpr, V: tl.constexpr, RATIO: tl.constexpr, MAXT: tl.constexpr,
-        SIGMOID: tl.constexpr, MAGIC_: tl.constexpr):
+        state, slot_stride, out, H, HV, scale,
+        K: tl.constexpr, V: tl.constexpr, BV: tl.constexpr, RATIO: tl.constexpr, MAXT: tl.constexpr,
+        MAGIC_: tl.constexpr):
+    """One (request, value head, block of BV value rows). Writes BF16 attention outputs before the gated norm."""
     req = tl.program_id(0)
     vh = tl.program_id(1)
+    vb = tl.program_id(2)
     bos = tl.load(cu_seqlens + req)
     n = tl.load(cu_seqlens + req + 1) - bos
     if n <= 0:
         return
     offs_k = tl.arange(0, K)
-    offs_v = tl.arange(0, V)
+    offs_v = vb * BV + tl.arange(0, BV)
     slot0 = tl.load(indices + req * indices_row)
     slot1 = tl.load(indices + req * indices_row + 1)
     accepted = tl.load(accepted_ptr + req)
     head = vh * V * K
     tile = offs_v[:, None] * K + offs_k[None, :]
     base0 = state + slot0.to(tl.int64) * slot_stride + head
-    rbase = state + slot1.to(tl.int64) * slot_stride + head
-    rec = rbase.to(tl.pointer_type(tl.float32))
-    meta = rbase.to(tl.pointer_type(tl.int32)) + MAXT * (K + V + 2)
+    rec, meta = _record(state, slot1, slot_stride, vh, vb, V, K, BV, MAXT)
 
     raw = tl.load(base0 + tile, mask=(slot0 > 0) & (tile >= 0), other=0.0)
     h1, h2 = _fingerprint(raw.to(tl.int16, bitcast=True).to(tl.int32), tile)
@@ -105,13 +120,13 @@ def _gdn_replay_decode_kernel(
     src = tl.where(valid, slot0, src)
     if (src <= 0) | (n > MAXT) | (slot1 <= 0):
         for t in range(n):
-            tl.store(out + ((bos + t) * HV + vh) * V + offs_v, tl.zeros((V,), tl.float32).to(out.dtype.element_ty))
+            tl.store(out + ((bos + t) * HV + vh) * V + offs_v, tl.zeros((BV,), tl.float32).to(out.dtype.element_ty))
         return
     if src != slot0:
         raw = tl.load(state + src.to(tl.int64) * slot_stride + head + tile)
     h = raw.to(tl.float32)
     replayed = tl.where(valid, tl.minimum(accepted, count), 0)
-    h = _replay(h, rec, replayed, K, V, MAXT)
+    h = _replay(h, rec, replayed, K, BV, MAXT)
     stored = h.to(tl.bfloat16)
     h = stored.to(tl.float32)
     if (replayed > 0) | (src != slot0):
@@ -122,7 +137,6 @@ def _gdn_replay_decode_kernel(
     kh = vh // RATIO
     a_log_v = tl.load(a_log + vh).to(tl.float32)
     dt = tl.load(dt_bias + vh).to(tl.float32)
-    weight = tl.load(norm_weight + offs_v).to(tl.float32)
     for t in range(n):
         token = (bos + t).to(tl.int64)
         row = qkv + token * qkv_row
@@ -139,17 +153,12 @@ def _gdn_replay_decode_kernel(
         hk = tl.sum(h * k[None, :], 1)
         delta = (v - hk) * beta
         h = h + delta[:, None] * k[None, :]
-        o = tl.sum(h * q[None, :], 1).to(tl.bfloat16).to(tl.float32)
-        rstd = tl.math.rsqrt(tl.sum(o * o, 0) / V + eps)
-        z = tl.load(gate + token * gate_row + vh * V + offs_v).to(tl.float32)
-        g = 1.0 / (1.0 + tl.exp(-z))
-        if not SIGMOID:
-            g = z * g
-        tl.store(out + (token * HV + vh) * V + offs_v, (o * rstd * weight * g).to(out.dtype.element_ty))
+        o = tl.sum(h * q[None, :], 1)
+        tl.store(out + (token * HV + vh) * V + offs_v, o.to(out.dtype.element_ty))
         tl.store(rec + t * K + offs_k, k)
-        tl.store(rec + MAXT * K + t * V + offs_v, v)
-        tl.store(rec + MAXT * (K + V) + t, decay)
-        tl.store(rec + MAXT * (K + V) + MAXT + t, beta)
+        tl.store(rec + MAXT * K + t * BV + tl.arange(0, BV), v)
+        tl.store(rec + MAXT * (K + BV) + t, decay)
+        tl.store(rec + MAXT * (K + BV) + MAXT + t, beta)
     tl.store(meta + 1, h1)
     tl.store(meta + 2, h2.to(tl.int32))  # low word
     tl.store(meta + 3, (h2 >> 32).to(tl.int32))
@@ -159,20 +168,38 @@ def _gdn_replay_decode_kernel(
 
 
 @triton.jit
+def _gated_norm_kernel(out, gate, gate_row, norm_weight, HV, eps, V: tl.constexpr, SIGMOID: tl.constexpr):
+    """vLLM's epilogue: RMS norm over the BF16 head output, times weight and gate activation."""
+    token = tl.program_id(0).to(tl.int64)
+    vh = tl.program_id(1)
+    offs = tl.arange(0, V)
+    ptr = out + (token * HV + vh) * V + offs
+    o = tl.load(ptr).to(tl.float32)
+    rstd = tl.math.rsqrt(tl.sum(o * o, 0) / V + eps)
+    z = tl.load(gate + token * gate_row + vh * V + offs).to(tl.float32)
+    g = 1.0 / (1.0 + tl.exp(-z))
+    if not SIGMOID:
+        g = z * g
+    w = tl.load(norm_weight + offs).to(tl.float32)
+    tl.store(ptr, (o * rstd * w * g).to(out.dtype.element_ty))
+
+
+@triton.jit
 def _gdn_materialize_kernel(indices, indices_row, accepted_ptr, state, slot_stride,
-                            K: tl.constexpr, V: tl.constexpr, MAXT: tl.constexpr, MAGIC_: tl.constexpr):
+                            K: tl.constexpr, V: tl.constexpr, BV: tl.constexpr, MAXT: tl.constexpr,
+                            MAGIC_: tl.constexpr):
     req = tl.program_id(0)
     vh = tl.program_id(1)
+    vb = tl.program_id(2)
     slot0 = tl.load(indices + req * indices_row)
     slot1 = tl.load(indices + req * indices_row + 1)
     if (slot0 <= 0) | (slot1 <= 0):
         return
     offs_k = tl.arange(0, K)
-    offs_v = tl.arange(0, V)
+    offs_v = vb * BV + tl.arange(0, BV)
     head = vh * V * K
     tile = offs_v[:, None] * K + offs_k[None, :]
-    rbase = state + slot1.to(tl.int64) * slot_stride + head
-    meta = rbase.to(tl.pointer_type(tl.int32)) + MAXT * (K + V + 2)
+    rec, meta = _record(state, slot1, slot_stride, vh, vb, V, K, BV, MAXT)
     if tl.load(meta) != MAGIC_:
         return
     base0 = state + slot0.to(tl.int64) * slot_stride + head
@@ -186,7 +213,7 @@ def _gdn_materialize_kernel(indices, indices_row, accepted_ptr, state, slot_stri
         return
     accepted = tl.load(accepted_ptr + req)
     accepted = tl.maximum(tl.minimum(accepted, count), 1)
-    h = _replay(raw.to(tl.float32), rbase.to(tl.pointer_type(tl.float32)), accepted, K, V, MAXT)
+    h = _replay(raw.to(tl.float32), rec, accepted, K, BV, MAXT)
     stored = h.to(tl.bfloat16)
     tl.debug_barrier()
     tl.store(base0 + tile, stored)
@@ -201,22 +228,25 @@ def replay_decode(mixed_qkv, a, b, A_log, dt_bias, state_indices, cu_seqlens, nu
                   state, output_gate, norm_weight, out, num_k_heads, scale, norm_eps, sigmoid_gate):
     num_requests = state_indices.shape[0]
     HV, V, K = state.shape[1], state.shape[2], state.shape[3]
-    _gdn_replay_decode_kernel[(num_requests, HV)](
+    _gdn_replay_decode_kernel[(num_requests, HV, V // BLOCK_V)](
         mixed_qkv, mixed_qkv.stride(0), a, a.stride(0), b, b.stride(0), A_log, dt_bias,
         state_indices, state_indices.stride(0), cu_seqlens, num_accepted_tokens,
-        state, state.stride(0), output_gate, output_gate.stride(0), norm_weight, out,
-        num_k_heads, HV, scale, norm_eps,
-        K=K, V=V, RATIO=HV // num_k_heads, MAXT=MAX_TOKENS, SIGMOID=sigmoid_gate, MAGIC_=MAGIC,
-        num_warps=8, num_stages=1)
+        state, state.stride(0), out, num_k_heads, HV, scale,
+        K=K, V=V, BV=BLOCK_V, RATIO=HV // num_k_heads, MAXT=MAX_TOKENS, MAGIC_=MAGIC,
+        num_warps=4, num_stages=1)
+    tokens = out.shape[0]
+    if tokens:
+        _gated_norm_kernel[(tokens, HV)](out, output_gate, output_gate.stride(0), norm_weight, HV, norm_eps,
+                                         V=V, SIGMOID=sigmoid_gate, num_warps=1)
 
 
 def materialize(rows, accepted, state):
     if rows is None or rows.shape[0] == 0:
         return
     HV, V, K = state.shape[1], state.shape[2], state.shape[3]
-    _gdn_materialize_kernel[(rows.shape[0], HV)](
+    _gdn_materialize_kernel[(rows.shape[0], HV, V // BLOCK_V)](
         rows, rows.stride(0), accepted, state, state.stride(0),
-        K=K, V=V, MAXT=MAX_TOKENS, MAGIC_=MAGIC, num_warps=8, num_stages=1)
+        K=K, V=V, BV=BLOCK_V, MAXT=MAX_TOKENS, MAGIC_=MAGIC, num_warps=4, num_stages=1)
 
 
 def supported(state, state_indices, mixed_qkv):

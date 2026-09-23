@@ -40,6 +40,11 @@ fi
 if [[ -n ${FLASHNEXT_PROFILE_DIR:-} ]]; then
   EXTRA+=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"${FLASHNEXT_PROFILE_DIR}\",\"torch_profiler_with_stack\":false}")
 fi
+# FP8 QSA indexer keys (vLLM-native; Q and compressed K are RMS-normalized before
+# the cast). Halves the per-step index read; changes block selection numerics.
+if [[ -n ${FLASHNEXT_INDEXER_KV_DTYPE:-} ]]; then
+  EXTRA+=(--attention-config "{\"indexer_kv_dtype\":\"${FLASHNEXT_INDEXER_KV_DTYPE}\"}")
+fi
 if [[ ${FLASHNEXT_TEXT_ONLY:-0} == 1 ]]; then EXTRA+=(--language-model-only); fi
 if [[ -n ${FLASHNEXT_DFLASH_MODEL:-} ]]; then
   if [[ ${FLASHNEXT_MTP:-0} != 0 || -n ${FLASHNEXT_DRAFT_VOCAB:-} ]]; then
