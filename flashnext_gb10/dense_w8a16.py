@@ -153,11 +153,14 @@ def register_dense_w8a16():
     original = ModelOptMixedPrecisionConfig.get_quant_method
     hc = os.environ.get('FLASHNEXT_W8A16_HC') == '1'
     mtp = os.environ.get('FLASHNEXT_W8A16_MTP') == '1'
+    # FLASHNEXT_W8A16_SHARED=0 keeps the shared experts in BF16.
+    shared = os.environ.get('FLASHNEXT_W8A16_SHARED', '1') == '1'
 
     def get_quant_method(self, layer, prefix):
         is_mtp = prefix.startswith('mtp') or '.mtp.' in prefix
         if isinstance(layer, LinearBase) and (
-                (not is_mtp and (TARGETS.search(prefix) or (hc and HC_TARGETS.search(prefix))))
+                (not is_mtp and (TARGETS.search(prefix) or (hc and HC_TARGETS.search(prefix)))
+                 and (shared or '.shared_expert.' not in prefix))
                 or (is_mtp and mtp and MTP_TARGETS.search(prefix[prefix.index('mtp'):]))):
             logger.info('FlashNext dense W8A16: %s', prefix)
             return W8A16LinearMethod()
