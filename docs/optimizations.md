@@ -191,3 +191,68 @@ continuations and eight real-source contexts; 32,768 scored positions) and
 compares top-1 agreement, approximate KL and realized-token NLL between
 configurations. Differences must be judged against a same-configuration
 repeat, because batch-dependent kernels are not bitwise reproducible.
+
+## Fidelity noise floor and FP8 dense reinstated
+
+`n1-old` repeats the baseline configuration with the original plugin copy;
+`n2-new` runs the same configuration on the current tree. Against the baseline
+reference:
+
+| Run | Workload top-1 | Workload KL | Codebase top-1 | Codebase KL |
+|---|---|---|---|---|
+| Same configuration repeated (noise floor) | 95.2% | 0.0147 | 83.3% | 0.280 |
+| Current tree, same configuration | 95.4% | 0.0146 | 82.6% | 0.285 |
+| Full-graph BF16 stack (`s2-full-bf16`) | 95.1% | 0.0147 | 83.0% | 0.280 |
+| FP8 dense, W8A8 (`fp8dense2-mtp2`) | 94.3% | 0.0230 | 81.3% | 0.343 |
+| NVFP4 dense, round-to-nearest (`s5-nvfp4dense`, vs s2) | 89.0% | 0.0749 | 77.2% | 0.486 |
+
+Greedy decoding with batch-dependent kernels is not reproducible, so most of the
+differences previously attributed to configurations are run-to-run noise. The
+current plugin and the full-graph stack are indistinguishable from the baseline.
+FP8 dense adds a small real shift (KL +0.008); NVFP4 dense a large one.
+
+The coding suite agrees: the BF16 full-graph stack (`suite-best`) scored exactly
+what FP8 dense scored (LiveCodeBench 23.3%, 23 of 30 length-limited; HumanEval
+92.5%; GSM8K 100%; MMLU-Pro 85.7% versus 82.1%). The single 36.7% baseline run
+is the outlier, not an FP8 regression. FP8 dense is therefore reinstated.
+
+## PLE lookup stall is storage-bound on the rented host
+
+The 4k decode profile (`s6-best-prof`, 164 ms per MTP-3 step) shows 15 ms per
+step of GPU idle between the n-gram ID copy and the PLE row upload; the 64k
+profile (`p64k-best`) shows 35 ms. The host's overlay filesystem sustains about
+12,000 random 160-byte reads per second at any thread count
+(`iops.py`: 5.8k at 8 threads, 12.2k at 32, 11.7k at 128), so a step's cold rows
+cost tens of milliseconds; with a larger KV cache the page cache holds fewer rows.
+Only 38-43% of decoded tokens repeat a 3-gram already in their context (64-73%
+for 2-grams), so a row cache cannot remove the misses. A DGX Spark's local NVMe
+serves several hundred thousand random reads per second, where the same lookup
+costs about 1-2 ms. Throughput measured here therefore understates a local
+deployment. A GPU gather straight from the file mapping (GB10 reports pageable
+memory access through host page tables) returns correct bytes but costs about
+8 ms for 512 warm rows and 100-300 ms cold, so it is not used.
+
+Other items in the 4k profile: routed-expert NVFP4 grouped GEMMs 76.6 ms per
+step (1.06 + 0.53 ms per layer), dense BF16 GEMMs about 48 ms, GDN update 9.6 ms,
+MTP draft MoE 5.4 ms. Isolated cuBLAS BF16 decode GEMMs already run at 200-222
+GB/s (`experiments/megakernel/skinny_bf16.py`); a tuned Triton kernel saves only
+2.1 ms per step.
+
+## W8A16 dense (FP8 weights, BF16 activations)
+
+`experiments/megakernel/w8a16.py` / `flashnext_gb10/dense_w8a16.py`: E4M3 weights
+with one scale per 128x128 block (the FP8 dense rounding) streamed by a Triton
+kernel with BF16 activations, so activation quantization is avoided. At M=32 it
+reaches 195-229 GB/s: GDN input 409 -> 185 us, GDN output 150 -> 72 us, QSA qkv
+307 -> 152 us, QSA output 144 -> 69 us, hyperconnection down 35 -> 17 us, shared
+experts 32 -> 16 and 17 -> 9 us; 32.0 -> 15.1 ms per step for these
+projections. `FLASHNEXT_DENSE_W8A16=1` covers GDN, QSA and shared experts;
+`FLASHNEXT_W8A16_HC=1` adds hyperconnection projections and
+`FLASHNEXT_W8A16_MTP=1` the draft block (draft proposals only).
+
+## 8 x 200k with FP8 dense
+
+`cap200k-fp8` (full-graph stack plus `FLASHNEXT_DENSE_FP8=1`, profile settings):
+113.34 tok/s over 117 s with all eight 200k streams decoding, mean accepted
+length 2.69, no errors, host available memory at least 10.4 GiB (BF16: 101.64,
+2.51, about 7.5 GiB).
