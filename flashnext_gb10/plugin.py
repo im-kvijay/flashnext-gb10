@@ -32,6 +32,14 @@ def register():
     if os.environ.get("FLASHNEXT_DENSE_FP8") == "1":
         from .dense_fp8 import register_dense_fp8
         register_dense_fp8()
+    if os.environ.get("FLASHNEXT_DENSE_W8A16") == "1":
+        if os.environ.get("FLASHNEXT_DENSE_FP8") == "1":
+            raise RuntimeError("FLASHNEXT_DENSE_W8A16 and FLASHNEXT_DENSE_FP8 are alternatives")
+        from .dense_w8a16 import register_dense_w8a16
+        register_dense_w8a16()
+    if os.environ.get("FLASHNEXT_COUNT_EXPERTS"):
+        from .expert_count import register_expert_count
+        register_expert_count(os.environ["FLASHNEXT_COUNT_EXPERTS"])
     if os.environ.get("FLASHNEXT_PACK_PLE_STATE") == "1":
         from .cache_packing import register_cache_packing
         register_cache_packing()

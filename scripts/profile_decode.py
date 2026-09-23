@@ -14,9 +14,10 @@ async def main(a):
     markers = tempfile.TemporaryDirectory(prefix='flashnext-profile-')
     process = await asyncio.create_subprocess_exec(
         sys.executable, str(root / 'bench/concurrency.py'), '--model', a.model,
-        '--url', a.url, '--concurrency', '8', '--input-tokens', '4096',
-        '--output-tokens', '4096', '--mode', 'workload',
+        '--url', a.url, '--concurrency', '8', '--input-tokens', str(a.input_tokens),
+        '--output-tokens', '4096', '--mode', a.mode,
         '--warm-prefixes', '--first-token-dir', markers.name, '--output', a.output,
+        *(['--corpus-root', a.corpus_root] if a.corpus_root else []),
     )
     started = False
     try:
@@ -61,6 +62,9 @@ if __name__ == '__main__':
     p.add_argument('--url',default='http://127.0.0.1:8000')
     p.add_argument('--ready-timeout',type=float,default=600)
     p.add_argument('--duration',type=float,default=2)
+    p.add_argument('--input-tokens',type=int,default=4096)
+    p.add_argument('--mode',choices=['workload','codebase'],default='workload')
+    p.add_argument('--corpus-root',help='Required for codebase mode')
     a = p.parse_args()
     if a.ready_timeout <= 0 or not 0 < a.duration <= 30:
         p.error('readiness timeout must be positive and capture duration in (0,30] seconds')
