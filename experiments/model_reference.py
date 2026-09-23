@@ -11,6 +11,7 @@ per-position log-probabilities with a served record.
 Usage: model_reference.py --model DIR --record determinism.json
 """
 import argparse
+import gc
 import json
 import time
 from pathlib import Path
@@ -157,6 +158,7 @@ def main():
             states[name] = layer(states[name], position_embeddings=rotary_inputs[name], attention_mask=masks[name],
                                  conv_mask=None, past_key_values=None, ple_input_ids=token_ids[name])
         del layer
+        gc.collect()  # the patched experts.forward is a bound method stored on its own module: a cycle
         torch.cuda.empty_cache()
         print(f'layer {index}: build {built:.0f}s forward {time.time() - start - built:.0f}s', flush=True)
     mixer = M.Qwen4ExpTextGatedResidual(config, use_combine=False).cuda()

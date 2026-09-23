@@ -327,5 +327,37 @@ and routed MoE each match an FP32 transformers reference on captured inputs
 to 0.5% (`experiments/gdn_reference.py`, `qsa_reference.py`,
 `moe_reference.py`). The remaining run-to-run sensitivity on raw source code
 and the observation that some code spans score worse with more context are
-being checked against a streaming full-model FP32 reference
-(`experiments/model_reference.py`).
+checked against a streaming full-model FP32 reference
+(`experiments/model_reference.py`: NVFP4 weights dequantized, FP32 math,
+dense attention over all 2048 tokens) on the served `codebase-0` sequence:
+
+| Positions 256-2047 | Mean NLL |
+|---|---|
+| FP32 reference | 2.57 |
+| Served, Marlin + BF16 KV (`d12`) | 2.47 |
+
+| Comparison | Mean abs dlogp | Fraction > 0.5 nats |
+|---|---|---|
+| Served vs FP32 reference | 0.31 | 18% |
+| Served vs served, identical requests | 0.35-0.38 | 17-24% |
+
+The served model is as close to the FP32 reference as it is to itself, and
+not worse on average. The reference shows the same context effect (span at
+1536: 3.90 nats with full context, 3.05 with the shortened one). Both are
+properties of the model on this input, not of the serving stack.
+
+## FP8 KV cache and the MTP drafter
+
+`experiments/drafter/diag_equivalence.py` replays captured prefill chunks
+through a transformers copy of the MTP block and compares its LM-head hidden
+state with vLLM's. With BF16 attention the match is poor (cosine 0.87-0.92,
+draft argmax agreement 89-97%). Rounding the block's keys and values to FP8
+E4M3 at unit scale, as the served FP8 KV cache does, reproduces vLLM
+(cosine 0.993-0.998, agreement 98-99%). Any other FP8 rounding of the same
+precision (per-tensor or per-head amax scales) lands back at cosine
+0.86-0.91, so the block is highly sensitive to KV rounding: FP8 KV moves its
+output by about 10% relative to BF16. On the target, BF16 KV scored 2.70
+codebase NLL against 2.84 with FP8 KV, within the target's own run-to-run
+spread. Keys have RMS 7 and max 92, values RMS 1.5 and max 15, so unit scale
+is not the problem. FP8 KV stays in the 8 x 200k profile because BF16 KV for
+eight 200k contexts does not fit next to the weights.
