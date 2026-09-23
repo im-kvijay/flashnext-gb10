@@ -57,6 +57,8 @@ class RowFetcher(torch.nn.Module):
         self.ckpt, self.prefix = ckpt, prefix
         self.rows = ckpt.handle(prefix + 'shard_0.weight').get_slice(prefix + 'shard_0.weight').get_shape()[0]
         self.scale = ckpt.get(prefix + 'weight_scale').float().item()
+        # transformers reads ngram_embedding.weight.device to place the IDs.
+        self.register_buffer('weight', torch.empty(0), persistent=False)
 
     def forward(self, ids):
         flat = ids.reshape(-1).cpu()

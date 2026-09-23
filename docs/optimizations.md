@@ -304,3 +304,28 @@ error into every routed-MoE output, which the FP32 model does not amplify
 but the served one does. NVFP4 weights with BF16 activations (Marlin, W4A16)
 remove that error at unchanged decode speed (`m1-marlin`: workload 120/128,
 prose 145 tok/s).
+
+## Recommended profile without activation quantization
+
+`profiles/gb10-8x200k.env` now uses Marlin W4A16 experts and W8A16 dense
+projections. Measured on the rented GB10:
+
+| Run | 8 x 200k | Workload 4k | Throughput 4k | Codebase repeat divergence (>0.5 nats) |
+|---|---|---|---|---|
+| FP8 dense, FP4-activation MoE (previous) | 113.3 | 112.0 / 122.6 | 175.7 | 35-38% |
+| Marlin + W8A16, FP8 KV (`d10c`, `cap200k-marlin`) | 114.4 | 119.7 / 123.0 | 186.7 | 17-24% |
+| Marlin + W8A16, BF16 KV (`d9`, 4k only) | - | 122.3 / 128.2 | 185.0 | 15-19% |
+
+`cap200k-marlin`: eight distinct 200k codebase contexts, all eight decoding
+together for 130 s, no errors, host available memory at least 10.6 GiB, mean
+accepted length 2.2-2.6. The coding suite is unchanged within its small-sample
+noise (HumanEval 92.5%, GSM8K 100%, LiveCodeBench 8/30 vs 7/30 with 22 of 30
+length-limited, MMLU-Pro 22/28 vs 24/28).
+
+With activation quantization removed, the served GDN layers, QSA attention
+and routed MoE each match an FP32 transformers reference on captured inputs
+to 0.5% (`experiments/gdn_reference.py`, `qsa_reference.py`,
+`moe_reference.py`). The remaining run-to-run sensitivity on raw source code
+and the observation that some code spans score worse with more context are
+being checked against a streaming full-model FP32 reference
+(`experiments/model_reference.py`).

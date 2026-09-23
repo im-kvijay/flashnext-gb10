@@ -69,14 +69,17 @@ set -a; . profiles/gb10-8x200k.env; set +a
 .venv/bin/python scripts/supervise.py --receipt results/serve-$(date +%s).jsonl
 ```
 
-Measured at eight concurrent streams on the rented GB10: 113.3 aggregate
-output tokens/s with eight distinct 200k-token contexts, 112-123 on a natural
-coding workload at 4k. The GDN/QSA projections use block FP8 weights (fidelity
-within run-to-run noise, see `docs/optimizations.md`); experts, lm_head and the
-chat template are unchanged; the GDN recurrent state is BF16 and the KV cache
-FP8. The rented host's storage limits the PLE lookup; local NVMe is faster. Weight loading takes about 15
-minutes. A 200k prompt prefills in about 3 minutes; later turns of the same
-conversation reuse the prefix cache. Details: `docs/optimizations.md`.
+Measured at eight concurrent streams on the rented GB10: 114.4 aggregate
+output tokens/s with eight distinct 200k-token contexts, 120-123 on a natural
+coding workload at 4k. No activations are quantized: routed experts run their
+NVFP4 weights with BF16 activations (Marlin), and the GDN/QSA projections use
+FP8 weights with BF16 activations. The default NVFP4 MoE kernel also rounds
+activations to FP4, which adds 7-10% error to every MoE output and makes
+long-prompt scoring unstable; see `docs/optimizations.md`. lm_head, embeddings
+and the chat template are unchanged; the GDN recurrent state is BF16 and the KV
+cache FP8. The rented host's storage limits the PLE lookup; local NVMe is
+faster. Weight loading takes about 15 minutes. A 200k prompt prefills in about
+3.5 minutes; later turns of the same conversation reuse the prefix cache.
 
 For development runs use the memory supervisor, with a new receipt filename:
 
