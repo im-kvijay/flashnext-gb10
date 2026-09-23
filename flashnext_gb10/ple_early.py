@@ -4,7 +4,9 @@ After a step's tokens are sampled, each request's next input begins with its
 bonus token, whose n-gram context (the two tokens before it) is already in the
 request state. Its n-gram IDs are computed exactly as the next step will
 compute them and copied to pinned memory; a helper thread reads those rows
-into the PLE row cache while the MTP drafter proposes. The next step's lookup
+into the PLE row cache while the MTP drafter proposes. When the drafter's
+first step has produced the first draft token, that token's rows are issued
+the same way while the remaining draft steps run. The next step's lookup
 is unchanged and simply finds the rows cached, so outputs are identical.
 
 The helper makes no CUDA calls (a CUDA call from another thread can invalidate
@@ -33,23 +35,36 @@ def register_ple_early():
             self.shards = module.ngram_embedding._checkpoint_shards
             heads = module.ngram_embedding._host_ids.shape[1]
             device = runner.device
-            self.ids = torch.empty(max_reqs, heads, dtype=torch.int64, pin_memory=True)
+            self.ids = torch.empty(2, max_reqs, heads, dtype=torch.int64, pin_memory=True)
             self.valid = torch.empty(max_reqs, dtype=torch.bool, pin_memory=True)
             self.seq_host = torch.zeros(1, dtype=torch.int64, pin_memory=True)
+            self.pairs = torch.arange(0, 2 * max_reqs + 1, 2, dtype=torch.int32, device=device)
+            self.state = None  # (num, context, bonus tokens) of the step being drafted
             self.seq_gpu = torch.zeros(1, dtype=torch.int64, device=device)
             self.positions = torch.arange(max_reqs + 1, dtype=torch.int32, device=device)
             self.offsets = torch.tensor([-2, -1], dtype=torch.int64, device=device)
             self.seq = 0
             self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='ple-early')
-            self.pending = None
+            self.pending = []
             self.issued = self.skipped = 0
 
+        def busy(self):
+            self.pending = [f for f in self.pending if not f.done()]
+            return bool(self.pending)
+
+        def submit(self, slot, num):
+            self.seq += 1
+            self.seq_gpu.fill_(self.seq)
+            self.seq_host.copy_(self.seq_gpu, non_blocking=True)
+            self.pending.append(self.pool.submit(self.read, self.seq, slot, num))
+
         def issue(self, runner, idx_mapping):
-            if self.pending is not None and not self.pending.done():
+            self.state = None
+            if self.busy():
                 self.skipped += 1  # previous prefetch still reading; never block the model thread
                 return
             num = idx_mapping.shape[0]
-            if num == 0 or num > self.ids.shape[0]:
+            if num == 0 or num > self.ids.shape[1]:
                 return
             states = runner.req_states
             idx = idx_mapping.long()
@@ -62,23 +77,33 @@ def register_ple_early():
             context = torch.where(positions >= 0, context, context.new_full((), eos))
             tokens = states.last_sampled_tokens[idx, 0].to(torch.int32)  # input IDs are int32
             ids = self.module.compute_ngram_ids(tokens, self.positions[:num + 1], context)
-            self.ids[:num].copy_(ids, non_blocking=True)
+            self.ids[0, :num].copy_(ids, non_blocking=True)
             self.valid[:num].copy_(valid, non_blocking=True)
-            self.seq += 1
-            self.seq_gpu.fill_(self.seq)
-            self.seq_host.copy_(self.seq_gpu, non_blocking=True)
-            self.pending = self.pool.submit(self.read, self.seq, num)
+            self.submit(0, num)
+            self.state = (num, context, tokens)
             self.issued += 1
             if self.issued % 2000 == 0:
                 logger.info('FlashNext early PLE prefetch: %d issued, %d skipped', self.issued, self.skipped)
 
-        def read(self, seq, num):
+        def issue_first_draft(self, draft_tokens):
+            """draft_tokens[:num, 0] holds each request's first draft token."""
+            if self.state is None:
+                return
+            num, context, bonus = self.state
+            self.state = None
+            # Layout [bonus, first draft] per request, as the next step lays out its inputs.
+            tokens = torch.stack([bonus, draft_tokens[:num, 0].to(torch.int32)], dim=1).reshape(-1)
+            ids = self.module.compute_ngram_ids(tokens, self.pairs[:num + 1], context)
+            self.ids[1, :num].copy_(ids.view(num, 2, -1)[:, 1], non_blocking=True)
+            self.submit(1, num)
+
+        def read(self, seq, slot, num):
             deadline = time.monotonic() + 2.0
             while int(self.seq_host[0]) < seq:
                 if time.monotonic() > deadline:
                     return
                 time.sleep(0.0001)
-            ids = self.ids[:num][self.valid[:num]]
+            ids = self.ids[slot, :num][self.valid[:num]]
             if ids.numel():
                 self.shards.prefetch(ids)
 
@@ -100,7 +125,10 @@ def register_ple_early():
                 logger.exception('FlashNext early PLE prefetch unavailable')
                 self._flashnext_early = False
                 return
-            logger.info('FlashNext early PLE prefetch enabled')
+            speculator = getattr(self, 'speculator', None)
+            if speculator is not None:
+                speculator._flashnext_early = early
+            logger.info('FlashNext early PLE prefetch enabled (first draft: %s)', speculator is not None)
         if early and not torch.cuda.is_current_stream_capturing():
             try:
                 early.issue(self, idx_mapping)
@@ -111,3 +139,20 @@ def register_ple_early():
 
     Runner.postprocess_sampled = postprocess_sampled
     Runner._flashnext_ple_early = True
+
+    # MTPSpeculator overrides the hook without calling the base class; it runs
+    # eagerly after the draft prefill (graph replay or eager forward).
+    from vllm.v1.worker.gpu.spec_decode.mtp.speculator import MTPSpeculator
+    original_prefill_end = MTPSpeculator.on_prefill_end
+
+    def on_prefill_end(self, num_reqs):
+        original_prefill_end(self, num_reqs)
+        early = getattr(self, '_flashnext_early', None)
+        if early and not torch.cuda.is_current_stream_capturing():
+            try:
+                early.issue_first_draft(self.draft_tokens)
+            except Exception:
+                logger.exception('FlashNext early PLE prefetch of first drafts disabled')
+                self._flashnext_early = None
+
+    MTPSpeculator.on_prefill_end = on_prefill_end
