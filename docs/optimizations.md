@@ -124,7 +124,16 @@ GEMM with BF16 activations. Dense bytes per step fall from 8.62 GB to about
 4.8 GB and weights shrink by about 3.8 GB. Per-matrix relative weight error is
 8.6% (FP8 block: about 2.6%), similar to the routed experts NVIDIA already
 ships in NVFP4. The encoder reproduces the checkpoint's expert values exactly
-given their scales. It needs the fidelity and suite comparison before use.
+given their scales.
+
+Rejected on fidelity. `s5-nvfp4dense` (otherwise the full-graph stack):
+170.10 tok/s short retrieval, 181.80 stress, 122.87 / 122.37 coding workload,
+about +15% on coding over BF16 dense, and 7 GiB more host memory available.
+Against the BF16 full-graph stack on the same host: workload top-1 89.0%,
+KL 0.075, NLL +0.063 nats/token, all worse than FP8 dense, which already
+failed the coding suite. Round-to-nearest NVFP4 is too coarse for these
+projections; a calibrated quantizer (GPTQ-style error feedback) or a partial
+target set would need to recover most of that gap before a suite run.
 
 ## Speculation depth
 
