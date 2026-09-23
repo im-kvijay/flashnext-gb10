@@ -26,6 +26,9 @@ def register():
             if os.environ.get("FLASHNEXT_PLE_EARLY") == "1":
                 from .ple_early import register_ple_early
                 register_ple_early()
+            if os.environ.get("FLASHNEXT_PLE_PREFILL_AHEAD"):
+                from .ple_prefill import register_ple_prefill
+                register_ple_prefill()
     if os.environ.get("FLASHNEXT_DRAFT_VOCAB"):
         from .draft_vocab import register_draft_vocab
         register_draft_vocab(os.environ["FLASHNEXT_DRAFT_VOCAB"])
