@@ -77,6 +77,8 @@ def _load_lookup(directory):
     dll.flashnext_row_cache_stats.restype=None
     dll.flashnext_cached_pread_shards.argtypes=[ctypes.c_void_p]+reader.argtypes
     dll.flashnext_cached_pread_shards.restype=ctypes.c_int
+    dll.flashnext_row_cache_prefetch.argtypes=[ctypes.c_void_p]+reader.argtypes[:9]+[ctypes.c_int,ctypes.c_int]
+    dll.flashnext_row_cache_prefetch.restype=ctypes.c_int
     return dll,function,reader
 
 
@@ -104,12 +106,13 @@ class CheckpointShards:
         self._row_cache=None
         self._calls=0
         # FLASHNEXT_PLE_CONTROL names a JSON file ({"row_cache_gib": x,
-        # "io_threads": n}) re-read about once a second, so one primed
+        # "io_threads": n, "early": bool}) re-read about once a second, so one primed
         # long-context server can measure several lookup settings.
         self._control=os.environ.get('FLASHNEXT_PLE_CONTROL')
         self._control_checked=0.0
         self._control_mtime=None
         self._cache_enabled=True
+        self._prefetch_enabled=True
 
     def add(self,start,tensor):
         if self.sealed:
@@ -192,19 +195,33 @@ class CheckpointShards:
         settings=json.loads(Path(self._control).read_text())
         if 'io_threads' in settings:
             self.io_threads=max(1,min(128,int(settings['io_threads'])))
+        self._prefetch_enabled=bool(settings.get('early',True))
         gib=float(settings.get('row_cache_gib',self.row_cache_gib))
         self._cache_enabled=gib>0
         if gib>0 and not self._row_cache and self.direct_io:
             self.row_cache_gib=gib
             self._row_cache=self._dll.flashnext_row_cache_create(int(gib*2**30)//(self.width+8),self.width)
         from vllm.logger import init_logger
-        init_logger('vllm.flashnext.ple').info('FlashNext PLE control %s: io_threads=%d row_cache=%s',
-                                                  settings,self.io_threads,bool(self._row_cache and self._cache_enabled))
+        init_logger('vllm.flashnext.ple').info('FlashNext PLE control %s: io_threads=%d row_cache=%s early=%s',
+                                                  settings,self.io_threads,bool(self._row_cache and self._cache_enabled),
+                                                  self._prefetch_enabled)
 
     def row_cache_stats(self):
-        stats=(ctypes.c_int64*3)()
+        """(hits, misses, unique rows read by gathers, rows read ahead by prefetch)."""
+        stats=(ctypes.c_int64*4)()
         self._dll.flashnext_row_cache_stats(self._row_cache,stats)
         return tuple(stats)
+
+    def prefetch(self,ids):
+        """Read uncached rows of ids into the row cache (thread-safe; no-op without a cache)."""
+        if not (self.sealed and self._row_cache and self._cache_enabled and self._prefetch_enabled):
+            return
+        flat=ids.reshape(-1).to(torch.int64).contiguous()
+        failures=self._dll.flashnext_row_cache_prefetch(
+            self._row_cache,self._fd_array,self._bases,self._starts,self._ends,len(self.parts),
+            flat.data_ptr(),flat.numel(),self.valid_rows,self.width,self.io_threads,int(self.io_mode=='direct'))
+        if failures:
+            raise OSError(f'{failures} PLE prefetch reads failed')
 
     def gather_into(self,ids,output,valid_rows):
         if not self.sealed:
@@ -228,11 +245,11 @@ class CheckpointShards:
                 raise OSError(f'{failures} direct PLE row reads failed')
             self._calls+=1
             if self._calls%2000==0:
-                hits,misses,unique=self.row_cache_stats()
+                hits,misses,unique,prefetched=self.row_cache_stats()
                 from vllm.logger import init_logger
                 init_logger('vllm.flashnext.ple').info(
-                    'FlashNext PLE row cache: hit rate %.3f, %d unique reads of %d misses',
-                    hits/max(hits+misses,1),unique,misses)
+                    'FlashNext PLE row cache: hit rate %.3f, %d unique reads of %d misses, %d rows prefetched',
+                    hits/max(hits+misses,1),unique,misses,prefetched)
             return
         if self.direct_io:
             failures=self._pread(self._fd_array,self._bases,self._starts,self._ends,len(self.parts),

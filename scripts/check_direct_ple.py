@@ -46,8 +46,28 @@ with tempfile.TemporaryDirectory() as directory:
             output=torch.empty(32,16,160,dtype=torch.uint8)
             table.gather_into(step,output,128)
             assert torch.equal(output,want),(io_mode,trial)
-        hits,misses,unique=table.row_cache_stats()
+        hits,misses,unique,_=table.row_cache_stats()
         assert hits>0 and unique<misses,(hits,misses,unique)
+        # Prefetch on another thread concurrently with gathers: same bytes.
+        import threading
+        stop=threading.Event()
+        def prefetcher():
+            while not stop.is_set():
+                table.prefetch(torch.randint(-5,133,(64,16)))
+        worker=threading.Thread(target=prefetcher)
+        worker.start()
+        try:
+            for trial in range(200):
+                step=torch.randint(-5,133,(32,16))
+                want=source.view(torch.uint8)[step.clamp(0,127)]
+                want[(step<0)|(step>=128)]=0
+                output=torch.empty(32,16,160,dtype=torch.uint8)
+                table.gather_into(step,output,128)
+                assert torch.equal(output,want),(io_mode,'concurrent',trial)
+        finally:
+            stop.set()
+            worker.join()
+        assert table.row_cache_stats()[3]>0
     for parts in ([(1,mapped)],[(0,mapped[:64]),(63,mapped[64:])]):
         table=CheckpointShards(160,source.dtype,directory)
         try:
@@ -82,5 +102,5 @@ with tempfile.TemporaryDirectory() as directory:
             input_dim=1,output_dim=0,weight_loader=lambda *args:None)
     assert parameter.untyped_storage().nbytes()==1
     print(json.dumps({'passed':True,'all_byte_patterns':True,'threads':[1,4],
-        'reader_lifetime':True,'row_cache_buffered_and_direct':True,'gap_overlap_heap_refused':True,'split_vma_same_file':True,
+        'reader_lifetime':True,'row_cache_buffered_and_direct':True,'concurrent_prefetch':True,'gap_overlap_heap_refused':True,'split_vma_same_file':True,
         'real_parameter_class_with_mocked_tp_metadata':True,'parameter_storage_bytes':1}))

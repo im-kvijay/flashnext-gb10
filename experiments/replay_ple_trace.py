@@ -55,7 +55,7 @@ def main():
           f"row_cache={os.environ.get('FLASHNEXT_PLE_ROW_CACHE_GIB', '0')}: {len(times)} steps, mean {times.mean():.1f} ms, "
           f"p50 {np.median(times):.1f}, p90 {np.percentile(times, 90):.1f}, second half {times[len(times)//2:].mean():.1f}")
     if table._row_cache:
-        hits, misses, unique = table.row_cache_stats()
+        hits, misses, unique, _ = table.row_cache_stats()
         print(f'  row cache hits {hits}, misses {misses}, unique reads {unique}')
 
 

@@ -88,20 +88,20 @@ int flashnext_pread_shards(const int *fds, const int64_t *bases, const int64_t *
 /* Row cache in front of flashnext_pread_shards. A 4 KiB page cache entry holds
    one useful 160-byte row for random n-gram IDs; this cache stores rows, so
    the same memory holds about 25 times as many. Two-way set associative with
-   one recently-used bit per set. Not thread-safe: calls must be serialized. */
+   one recently-used bit per set. A mutex guards lookups and inserts, never
+   device reads, so a prefetch and a step's gather can overlap. */
+#include <pthread.h>
 #include <sys/mman.h>
 
 typedef struct {
+    pthread_mutex_t lock;
+    int64_t prefetched;  /* rows inserted by flashnext_row_cache_prefetch */
     int64_t sets;
     size_t width;
     int64_t *tags;     /* 2 * sets, -1 = empty */
     uint8_t *recent;   /* sets: way used most recently */
     uint8_t *data;     /* 2 * sets * width */
     int64_t hits, misses, unique_misses;
-    /* scratch for one call */
-    int64_t capacity;
-    int64_t *miss_index, *miss_id, *order;
-    uint8_t *miss_rows;
 } flashnext_row_cache;
 
 static void *map_zeroed(size_t bytes) {
@@ -112,6 +112,7 @@ static void *map_zeroed(size_t bytes) {
 flashnext_row_cache *flashnext_row_cache_create(int64_t rows, size_t width) {
     flashnext_row_cache *c = calloc(1, sizeof(*c));
     if (!c) return NULL;
+    pthread_mutex_init(&c->lock, NULL);
     c->sets = rows / 2 > 0 ? rows / 2 : 1;
     c->width = width;
     c->tags = map_zeroed((size_t)c->sets * 2 * sizeof(int64_t));
@@ -122,8 +123,10 @@ flashnext_row_cache *flashnext_row_cache_create(int64_t rows, size_t width) {
     return c;
 }
 
-void flashnext_row_cache_stats(const flashnext_row_cache *c, int64_t *out) {
-    out[0] = c->hits; out[1] = c->misses; out[2] = c->unique_misses;
+void flashnext_row_cache_stats(flashnext_row_cache *c, int64_t *out) {
+    pthread_mutex_lock(&c->lock);
+    out[0] = c->hits; out[1] = c->misses; out[2] = c->unique_misses; out[3] = c->prefetched;
+    pthread_mutex_unlock(&c->lock);
 }
 
 static inline int64_t cache_set(const flashnext_row_cache *c, int64_t id) {
@@ -137,64 +140,112 @@ static int compare_by_id(const void *a, const void *b, void *ids) {
     return (x > y) - (x < y);
 }
 
-static int grow(flashnext_row_cache *c, int64_t count) {
-    if (count <= c->capacity) return 0;
-    free(c->miss_index); free(c->miss_id); free(c->order); free(c->miss_rows);
-    c->miss_index = malloc(count * sizeof(int64_t));
-    c->miss_id = malloc(count * sizeof(int64_t));
-    c->order = malloc(count * sizeof(int64_t));
-    c->miss_rows = malloc((size_t)count * c->width);
-    c->capacity = (c->miss_index && c->miss_id && c->order && c->miss_rows) ? count : 0;
-    return c->capacity ? 0 : -1;
+static inline int lookup(flashnext_row_cache *c, int64_t id, uint8_t *destination) {
+    int64_t set = cache_set(c, id);
+    int way = c->tags[2 * set] == id ? 0 : (c->tags[2 * set + 1] == id ? 1 : -1);
+    if (way < 0) return 0;
+    if (destination) memcpy(destination, c->data + ((size_t)(2 * set + way)) * c->width, c->width);
+    c->recent[set] = (uint8_t)way;
+    return 1;
+}
+
+static void insert(flashnext_row_cache *c, int64_t id, const uint8_t *row) {
+    int64_t set = cache_set(c, id);
+    if (c->tags[2 * set] == id || c->tags[2 * set + 1] == id) return;
+    int way = c->tags[2 * set] == -1 ? 0 : (c->tags[2 * set + 1] == -1 ? 1 : 1 - c->recent[set]);
+    c->tags[2 * set + way] = id;
+    memcpy(c->data + ((size_t)(2 * set + way)) * c->width, row, c->width);
+    c->recent[set] = (uint8_t)way;
+}
+
+/* Sorts the missing positions in order by ID, reads each distinct ID once and
+   returns the rows in miss_rows, ordered like miss_id. */
+static int read_misses(const int *fds, const int64_t *bases, const int64_t *starts, const int64_t *ends,
+                       int64_t shards, const int64_t *ids, int64_t valid_rows, size_t width, int threads,
+                       int aligned, int64_t *order, int64_t misses, int64_t *miss_id, int64_t *unique_out,
+                       uint8_t *miss_rows) {
+    qsort_r(order, misses, sizeof(int64_t), compare_by_id, (void *)ids);
+    int64_t unique = 0;
+    for (int64_t m = 0; m < misses; ++m) {
+        int64_t id = ids[order[m]];
+        if (!unique || miss_id[unique - 1] != id) miss_id[unique++] = id;
+    }
+    *unique_out = unique;
+    return flashnext_pread_shards(fds, bases, starts, ends, shards, miss_id, unique, valid_rows, width,
+                                  miss_rows, threads, aligned);
 }
 
 int flashnext_cached_pread_shards(flashnext_row_cache *c, const int *fds, const int64_t *bases,
                                   const int64_t *starts, const int64_t *ends, int64_t shards,
                                   const int64_t *ids, int64_t count, int64_t valid_rows, size_t width,
                                   uint8_t *output, int threads, int aligned) {
-    if (width != c->width || grow(c, count)) return (int)count;
-    int64_t misses = 0;
+    if (width != c->width) return (int)count;
+    int64_t *order = malloc(count * sizeof(int64_t) + 1), *miss_id = malloc(count * sizeof(int64_t) + 1);
+    uint8_t *miss_rows = malloc((size_t)count * width + 1);
+    if (!order || !miss_id || !miss_rows) { free(order); free(miss_id); free(miss_rows); return (int)count; }
+    int64_t misses = 0, hits = 0;
+    pthread_mutex_lock(&c->lock);
     for (int64_t i = 0; i < count; ++i) {
         int64_t id = ids[i];
         uint8_t *destination = output + (size_t)i * width;
         if (id < 0 || id >= valid_rows) { memset(destination, 0, width); continue; }
-        int64_t set = cache_set(c, id);
-        int way = c->tags[2 * set] == id ? 0 : (c->tags[2 * set + 1] == id ? 1 : -1);
-        if (way >= 0) {
-            memcpy(destination, c->data + ((size_t)(2 * set + way)) * width, width);
-            c->recent[set] = (uint8_t)way;
-            c->hits++;
-        } else {
-            c->miss_index[misses++] = i;
+        if (lookup(c, id, destination)) hits++;
+        else order[misses++] = i;
+    }
+    c->hits += hits;
+    c->misses += misses;
+    pthread_mutex_unlock(&c->lock);
+    int failures = 0;
+    if (misses) {
+        int64_t unique = 0;
+        failures = read_misses(fds, bases, starts, ends, shards, ids, valid_rows, width, threads, aligned,
+                               order, misses, miss_id, &unique, miss_rows);
+        if (!failures) {
+            int64_t u = 0;
+            for (int64_t m = 0; m < misses; ++m) {
+                int64_t i = order[m];
+                while (miss_id[u] != ids[i]) ++u;
+                memcpy(output + (size_t)i * width, miss_rows + (size_t)u * width, width);
+            }
+            pthread_mutex_lock(&c->lock);
+            c->unique_misses += unique;
+            for (u = 0; u < unique; ++u) insert(c, miss_id[u], miss_rows + (size_t)u * width);
+            pthread_mutex_unlock(&c->lock);
         }
     }
-    c->misses += misses;
-    if (!misses) return 0;
-    /* Deduplicate: rows repeated within a step (across heads or sequences) are read once. */
-    for (int64_t m = 0; m < misses; ++m) c->order[m] = c->miss_index[m];
-    qsort_r(c->order, misses, sizeof(int64_t), compare_by_id, (void *)ids);
-    int64_t unique = 0;
-    for (int64_t m = 0; m < misses; ++m) {
-        int64_t id = ids[c->order[m]];
-        if (!unique || c->miss_id[unique - 1] != id) c->miss_id[unique++] = id;
+    free(order); free(miss_id); free(miss_rows);
+    return failures;
+}
+
+/* Reads rows that are not cached yet into the cache, with no output. Used to
+   start a step's reads as soon as its token IDs exist. */
+int flashnext_row_cache_prefetch(flashnext_row_cache *c, const int *fds, const int64_t *bases,
+                                 const int64_t *starts, const int64_t *ends, int64_t shards,
+                                 const int64_t *ids, int64_t count, int64_t valid_rows, size_t width,
+                                 int threads, int aligned) {
+    if (width != c->width) return (int)count;
+    int64_t *order = malloc(count * sizeof(int64_t) + 1), *miss_id = malloc(count * sizeof(int64_t) + 1);
+    uint8_t *miss_rows = malloc((size_t)count * width + 1);
+    if (!order || !miss_id || !miss_rows) { free(order); free(miss_id); free(miss_rows); return (int)count; }
+    int64_t misses = 0;
+    pthread_mutex_lock(&c->lock);
+    for (int64_t i = 0; i < count; ++i) {
+        int64_t id = ids[i];
+        if (id >= 0 && id < valid_rows && !lookup(c, id, NULL)) order[misses++] = i;
     }
-    c->unique_misses += unique;
-    int failures = flashnext_pread_shards(fds, bases, starts, ends, shards, c->miss_id, unique,
-                                          valid_rows, width, c->miss_rows, threads, aligned);
-    if (failures) return failures;
-    int64_t u = 0;
-    for (int64_t m = 0; m < misses; ++m) {
-        int64_t i = c->order[m];
-        while (c->miss_id[u] != ids[i]) ++u;
-        memcpy(output + (size_t)i * width, c->miss_rows + (size_t)u * width, width);
+    pthread_mutex_unlock(&c->lock);
+    int failures = 0;
+    if (misses) {
+        int64_t unique = 0;
+        failures = read_misses(fds, bases, starts, ends, shards, ids, valid_rows, width, threads, aligned,
+                               order, misses, miss_id, &unique, miss_rows);
+        if (!failures) {
+            pthread_mutex_lock(&c->lock);
+            for (int64_t u = 0; u < unique; ++u) insert(c, miss_id[u], miss_rows + (size_t)u * width);
+            c->prefetched += unique;
+            pthread_mutex_unlock(&c->lock);
+        }
     }
-    for (u = 0; u < unique; ++u) {
-        int64_t id = c->miss_id[u];
-        int64_t set = cache_set(c, id);
-        int way = c->tags[2 * set] == -1 ? 0 : (c->tags[2 * set + 1] == -1 ? 1 : 1 - c->recent[set]);
-        c->tags[2 * set + way] = id;
-        memcpy(c->data + ((size_t)(2 * set + way)) * width, c->miss_rows + (size_t)u * width, width);
-        c->recent[set] = (uint8_t)way;
-    }
-    return 0;
+    free(order); free(miss_id); free(miss_rows);
+    return failures;
 }

@@ -23,6 +23,9 @@ def register():
             from .vllm_nvme import register_preforward
             register_preforward(ngram_embedding, model_state)
             ngram_embedding.logger.info("FlashNext PLE rows are staged before the forward")
+            if os.environ.get("FLASHNEXT_PLE_EARLY") == "1":
+                from .ple_early import register_ple_early
+                register_ple_early()
     if os.environ.get("FLASHNEXT_DRAFT_VOCAB"):
         from .draft_vocab import register_draft_vocab
         register_draft_vocab(os.environ["FLASHNEXT_DRAFT_VOCAB"])
