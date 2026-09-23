@@ -44,6 +44,9 @@ def register():
         # After W8A16: only layers still on the plain BF16 method are switched.
         from .dense_bf16 import register_dense_bf16
         register_dense_bf16()
+    if os.environ.get("FLASHNEXT_QSA_DECODE_CONFIG"):
+        from .qsa_decode_config import register_qsa_decode_config
+        register_qsa_decode_config()
     if os.environ.get("FLASHNEXT_GDN_REPLAY") == "1":
         from .gdn_replay import register_gdn_replay
         register_gdn_replay()
