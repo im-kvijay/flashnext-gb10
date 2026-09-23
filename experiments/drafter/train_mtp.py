@@ -69,11 +69,12 @@ def draft_attention(module, q, k, v, mask, scaling=None, **kw):
 AttentionInterface.register('draft', draft_attention)
 
 
-def load_sequences(capture_dir):
+def load_sequences(capture_dirs):
     """Join chunk captures into sequences (a sequence restarts at position 0)."""
     sequences, current = [], None
-    for path in sorted(Path(capture_dir).glob('*.pt')):
-        record = torch.load(path)
+    paths = [path for d in capture_dirs for path in sorted(Path(d).glob('*.pt'))]
+    for path in paths:
+        record = torch.load(path, mmap=True)
         if record['positions'].shape[0] > 1 and record['positions'][-1] == 0:
             continue  # startup profiling / warm-up forward on dummy tokens
         if record['positions'][0] == 0 or current is None:
@@ -83,7 +84,7 @@ def load_sequences(capture_dir):
         elif record['positions'][0] != current['positions'][-1][-1] + 1:
             raise ValueError(f'{path.name}: chunk does not continue the previous sequence')
         for key in current:
-            current[key].append(record[key])
+            current[key].append(record[key].clone())
     if current:
         sequences.append(current)
     return [{k: torch.cat(v) for k, v in s.items()} for s in sequences]
@@ -124,7 +125,8 @@ def unrolled(block, embed, window, steps):
         # Step k at row i drafts from position i + k - 1 with token i + k - 1 (teacher-forced).
         sample, multi = block(multi[:rows][None], embed[ids[k - 1:k - 1 + rows]][None],
                               positions[k - 1:k - 1 + rows][None])
-        yield k, sample[0], multi[0]
+        multi = multi[0]
+        yield k, sample[0], multi
 
 
 def kl_and_accept(sample, target_logits, head, vocab_mask, chunk=512):
@@ -172,7 +174,7 @@ def evaluate(block, embed, head, mixer, data, steps, vocab_mask):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--weights', required=True)
-    p.add_argument('--captures', required=True)
+    p.add_argument('--captures', required=True, nargs='+', help='one or more capture directories')
     p.add_argument('--draft-vocab', help='JSON list of draft token IDs (the served draft vocabulary)')
     p.add_argument('--steps', type=int, default=3)
     p.add_argument('--step-weights', default='1.0,0.7,0.5')

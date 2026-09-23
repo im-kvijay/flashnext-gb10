@@ -7,6 +7,8 @@ target's pre-final-mixer multi-stream hidden state [T, hc_count * hidden] it
 consumes, and its outputs (the single stream for the LM head and the
 multi stream for the next draft step). Replaying one request at a time makes
 each chunk one contiguous span of one sequence. Outputs are unchanged.
+FLASHNEXT_CAPTURE_MTP_OUTPUTS=0 keeps only the training inputs (IDs,
+positions, target hidden), which halves the size of the capture.
 """
 import itertools
 import os
@@ -24,6 +26,7 @@ def register_mtp_capture(directory):
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
     minimum = int(os.environ.get('FLASHNEXT_CAPTURE_MIN_TOKENS', '64'))
+    keep_outputs = os.environ.get('FLASHNEXT_CAPTURE_MTP_OUTPUTS', '1') == '1'
     counter = itertools.count()
     original = Predictor.forward
 
@@ -36,10 +39,11 @@ def register_mtp_capture(directory):
                 and not torch.cuda.is_current_stream_capturing()):
             count = input_ids.shape[0]
             cpu = lambda t: t[:count].to('cpu')
-            torch.save(dict(ids=cpu(input_ids).int(), positions=cpu(positions.reshape(-1)).int(),
-                            hidden=cpu(hidden_states).bfloat16(), sample_hidden=cpu(result[0]).bfloat16(),
-                            multi_hidden=cpu(result[1]).bfloat16()),
-                       out / f'{next(counter):07d}.pt')
+            record = dict(ids=cpu(input_ids).int(), positions=cpu(positions.reshape(-1)).int(),
+                          hidden=cpu(hidden_states).bfloat16())
+            if keep_outputs:
+                record.update(sample_hidden=cpu(result[0]).bfloat16(), multi_hidden=cpu(result[1]).bfloat16())
+            torch.save(record, out / f'{next(counter):07d}.pt')
         return result
 
     Predictor.forward = forward

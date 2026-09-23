@@ -40,6 +40,9 @@ def register():
     if os.environ.get("FLASHNEXT_COUNT_EXPERTS"):
         from .expert_count import register_expert_count
         register_expert_count(os.environ["FLASHNEXT_COUNT_EXPERTS"])
+    if os.environ.get("FLASHNEXT_MTP_OVERRIDE"):
+        from .mtp_override import register_mtp_override
+        register_mtp_override(os.environ["FLASHNEXT_MTP_OVERRIDE"])
     if os.environ.get("FLASHNEXT_CAPTURE_MTP_DIR"):
         from .mtp_capture import register_mtp_capture
         register_mtp_capture(os.environ["FLASHNEXT_CAPTURE_MTP_DIR"])
