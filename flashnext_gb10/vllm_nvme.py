@@ -6,6 +6,8 @@ table is never pinned or exposed to a GPU kernel; only gathered rows are pinned.
 """
 from concurrent.futures import ThreadPoolExecutor
 import os
+import struct
+import time
 
 import torch
 from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphCapture, eager_break_during_capture
@@ -13,6 +15,19 @@ from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphCapture, eage
 from .mapped_table import MappedTable
 
 PREFORWARD = os.environ.get('FLASHNEXT_PLE_PREFORWARD') == '1'
+TRACE = os.environ.get('FLASHNEXT_PLE_TRACE')
+
+
+class _Trace:
+    """Per-step PLE record: header (count, heads, gather ns, wall ns) then int64 IDs."""
+
+    def __init__(self, path):
+        self.file = open(path, 'ab', buffering=1 << 20)
+
+    def write(self, ids, gather_ns):
+        count, heads = ids.shape
+        self.file.write(struct.pack('<qqqq', count, heads, gather_ns, time.time_ns()))
+        self.file.write(ids.numpy().tobytes())
 
 
 def gather_bytes(weight, ids, start, end):
@@ -177,7 +192,12 @@ def make_nvme_embedding(upstream, directory):
             stream = torch.cuda.current_stream(self._device)
             self._ids_ready.record(stream)
             self._ids_ready.synchronize()
+            start = time.perf_counter_ns()
             staging = self._gather(ids)
+            if TRACE:
+                if not hasattr(self, '_trace'):
+                    self._trace = _Trace(f'{TRACE}.{os.getpid()}.{id(self) & 0xffff:04x}.bin')
+                self._trace.write(ids, time.perf_counter_ns() - start)
             self._prefetch_buffer[:count].copy_(staging, non_blocking=True)
             self._copy_done.record(stream)
             self._copy_recorded = True

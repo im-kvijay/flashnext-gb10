@@ -30,6 +30,24 @@ with tempfile.TemporaryDirectory() as directory:
         output=torch.empty(256,16,160,dtype=torch.uint8)
         table.gather_into(ids,output,128)
         assert torch.equal(output,expected)
+    # Row cache: identical bytes through hits, duplicate misses and evictions
+    # (a 64-row cache over a 128-row table), with buffered and O_DIRECT reads.
+    import os
+    for io_mode in ('buffered','direct'):
+        with patch.dict(os.environ,{'FLASHNEXT_PLE_ROW_CACHE_GIB':str(64*168/2**30),'FLASHNEXT_PLE_IO':io_mode}):
+            table=CheckpointShards(160,source.dtype,directory)
+        for start,end in ((64,128),(0,32),(32,64)):
+            table.add(start,mapped[start:end])
+        for trial in range(20):
+            step=torch.randint(-5,133,(8*4,16))
+            step[1]=step[0]  # duplicates within one call
+            want=source.view(torch.uint8)[step.clamp(0,127)]
+            want[(step<0)|(step>=128)]=0
+            output=torch.empty(32,16,160,dtype=torch.uint8)
+            table.gather_into(step,output,128)
+            assert torch.equal(output,want),(io_mode,trial)
+        hits,misses,unique=table.row_cache_stats()
+        assert hits>0 and unique<misses,(hits,misses,unique)
     for parts in ([(1,mapped)],[(0,mapped[:64]),(63,mapped[64:])]):
         table=CheckpointShards(160,source.dtype,directory)
         try:
@@ -64,5 +82,5 @@ with tempfile.TemporaryDirectory() as directory:
             input_dim=1,output_dim=0,weight_loader=lambda *args:None)
     assert parameter.untyped_storage().nbytes()==1
     print(json.dumps({'passed':True,'all_byte_patterns':True,'threads':[1,4],
-        'reader_lifetime':True,'gap_overlap_heap_refused':True,'split_vma_same_file':True,
+        'reader_lifetime':True,'row_cache_buffered_and_direct':True,'gap_overlap_heap_refused':True,'split_vma_same_file':True,
         'real_parameter_class_with_mocked_tp_metadata':True,'parameter_storage_bytes':1}))

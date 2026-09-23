@@ -70,6 +70,12 @@ def _load_lookup(directory):
     reader.argtypes=[ctypes.c_void_p]*4+[ctypes.c_int64,ctypes.c_void_p,
         ctypes.c_int64,ctypes.c_int64,ctypes.c_size_t,ctypes.c_void_p,ctypes.c_int,ctypes.c_int]
     reader.restype=ctypes.c_int
+    dll.flashnext_row_cache_create.argtypes=[ctypes.c_int64,ctypes.c_size_t]
+    dll.flashnext_row_cache_create.restype=ctypes.c_void_p
+    dll.flashnext_row_cache_stats.argtypes=[ctypes.c_void_p,ctypes.c_void_p]
+    dll.flashnext_row_cache_stats.restype=None
+    dll.flashnext_cached_pread_shards.argtypes=[ctypes.c_void_p]+reader.argtypes
+    dll.flashnext_cached_pread_shards.restype=ctypes.c_int
     return dll,function,reader
 
 
@@ -91,6 +97,11 @@ class CheckpointShards:
         self.sealed=False
         self._fds={}
         self._dll,self._lookup,self._pread=_load_lookup(directory)
+        # Row cache in front of pread (FLASHNEXT_PLE_ROW_CACHE_GIB): same bytes,
+        # about 25x the rows per GiB of the page cache for random 160-byte rows.
+        self.row_cache_gib=float(os.environ.get('FLASHNEXT_PLE_ROW_CACHE_GIB','0'))
+        self._row_cache=None
+        self._calls=0
 
     def add(self,start,tensor):
         if self.sealed:
@@ -148,7 +159,19 @@ class CheckpointShards:
         if self.direct_io:
             self._fd_array=(ctypes.c_int*n)(*(self._fds[p[3]] for p in ordered))
             self._bases=(ctypes.c_int64*n)(*(p[4] for p in ordered))
+            if self.row_cache_gib>0:
+                rows=int(self.row_cache_gib*2**30)//(self.width+8)
+                self._row_cache=self._dll.flashnext_row_cache_create(rows,self.width)
+                if not self._row_cache:
+                    raise MemoryError('Unable to map the PLE row cache')
+                init_logger('vllm.flashnext.ple').info(
+                    'FlashNext PLE row cache: %.2f GiB, %d rows', self.row_cache_gib, rows)
         self.sealed=True
+
+    def row_cache_stats(self):
+        stats=(ctypes.c_int64*3)()
+        self._dll.flashnext_row_cache_stats(self._row_cache,stats)
+        return tuple(stats)
 
     def gather_into(self,ids,output,valid_rows):
         if not self.sealed:
@@ -161,6 +184,21 @@ class CheckpointShards:
         if (output.device.type!='cpu' or output.dtype!=torch.uint8 or not output.is_contiguous()
                 or output.numel()!=flat.numel()*self.width):
             raise ValueError('Direct PLE output buffer has wrong device, dtype, size or layout')
+        if self._row_cache:
+            failures=self._dll.flashnext_cached_pread_shards(
+                self._row_cache,self._fd_array,self._bases,self._starts,self._ends,len(self.parts),
+                flat.data_ptr(),flat.numel(),valid_rows,self.width,output.data_ptr(),
+                self.io_threads,int(self.io_mode=='direct'))
+            if failures:
+                raise OSError(f'{failures} direct PLE row reads failed')
+            self._calls+=1
+            if self._calls%2000==0:
+                hits,misses,unique=self.row_cache_stats()
+                from vllm.logger import init_logger
+                init_logger('vllm.flashnext.ple').info(
+                    'FlashNext PLE row cache: hit rate %.3f, %d unique reads of %d misses',
+                    hits/max(hits+misses,1),unique,misses)
+            return
         if self.direct_io:
             failures=self._pread(self._fd_array,self._bases,self._starts,self._ends,len(self.parts),
                                  flat.data_ptr(),flat.numel(),valid_rows,self.width,output.data_ptr(),
