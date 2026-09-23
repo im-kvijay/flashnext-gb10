@@ -169,17 +169,21 @@ def register_dense_w8a16():
     ModelOptMixedPrecisionConfig.get_quant_method = get_quant_method
     ModelOptMixedPrecisionConfig._flashnext_dense_w8a16 = True
 
-    if mtp:
-        # The draft block may be built under another quant config (or none), which
-        # the hook above never sees; switch its unquantized targets at construction.
+    if mtp or hc:
+        # Hyperconnection projections are built with quant_config=None and the draft
+        # block may use another quant config, so the hook above never sees them;
+        # switch their unquantized targets at construction.
         original_init = LinearBase.__init__
 
         def __init__(self, *args, **kwargs):
             original_init(self, *args, **kwargs)
             prefix = getattr(self, 'prefix', '') or kwargs.get('prefix', '')
-            if type(self.quant_method) is UnquantizedLinearMethod and ('.mtp.' in prefix or prefix.startswith('mtp')):
-                if MTP_TARGETS.search(prefix[prefix.index('mtp'):]):
-                    logger.info('FlashNext dense W8A16: %s', prefix)
-                    self.quant_method = W8A16LinearMethod()
+            if type(self.quant_method) is not UnquantizedLinearMethod:
+                return
+            is_mtp = '.mtp.' in prefix or prefix.startswith('mtp')
+            if ((is_mtp and mtp and MTP_TARGETS.search(prefix[prefix.index('mtp'):]))
+                    or (not is_mtp and hc and HC_TARGETS.search(prefix))):
+                logger.info('FlashNext dense W8A16: %s', prefix)
+                self.quant_method = W8A16LinearMethod()
 
         LinearBase.__init__ = __init__
