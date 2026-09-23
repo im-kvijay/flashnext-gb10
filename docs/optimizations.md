@@ -150,7 +150,17 @@ The cache layout needs about 16.9 KB per token, about 28 GiB for eight
 available (17-24 GiB typical), so eight long contexts do not fit in the
 current configuration. Candidate savings: dense FP8 (about 2.5 GiB), GDN
 speculative state slots (about 1.8 GB), FP8 indexer keys, NVFP4 MTP experts,
-host-mapped input embeddings. Not yet demonstrated.
+host-mapped input embeddings.
+
+First attempt (`cap200k-best`, full-graph BF16 stack, 24.5 GiB KV): the cache
+held 1,652,167 tokens (7.76 x 212,992; 8 x 202,048 are needed), and host
+available memory settled at about 9.5 GiB after graph capture (0.99 GiB of
+graphs). About 100 s into the eight 200k prefills it fell to 7.2 GiB and the
+supervisor's 8 GiB floor stopped the service before any decode. The likely
+growth is prefill temporaries that scale with chunk size times context length
+(sparse-attention indexer scores). The retry uses 1024-token prefill chunks
+and expandable allocator segments. `FLASHNEXT_MIN_AVAILABLE_GIB` sets the
+supervisor floor.
 
 ## Quality measurement
 

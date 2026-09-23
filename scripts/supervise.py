@@ -79,7 +79,8 @@ def main(a):
 if __name__ == '__main__':
     p=argparse.ArgumentParser()
     p.add_argument('--receipt',required=True,help='New JSONL file; existing runs are never overwritten')
-    p.add_argument('--minimum-available-gib',type=float,default=8)
+    p.add_argument('--minimum-available-gib',type=float,
+                   default=float(os.environ.get('FLASHNEXT_MIN_AVAILABLE_GIB','8')))
     p.add_argument('--grace-seconds',type=float,default=3)
     p.add_argument('--command',nargs=argparse.REMAINDER,
                    help='Run an explicit argv under the same guard, for native engine experiments')
