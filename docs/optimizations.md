@@ -448,3 +448,12 @@ mostly PLE row reads (24% of prefill wall time on the rented host's disk).
 - Decode A/B `ab-bf16` (Triton decode GEMM for the small BF16 projections):
   workload 121.3 / 128.3 tok/s vs 125.3 / 127.6 without, within noise; not
   adopted.
+
+## Decode A/Bs at 4k (September 24; `abcmp`, fidelity against BF16-dense `m1-marlin`)
+
+| Run | Workload / repeat tok/s | Codebase top-1 / KL / NLL | Decision |
+|---|---|---|---|
+| `ab-bf16` (profile + Triton decode GEMM) | 121.3 / 128.3 | 86.8% / 0.208 / +0.029 | reference |
+| `ab-gdn` (+ GDN replay) | 128.2 / 139.3 | prefill-only metric, not affected | not adopted: after one request finished early, three of seven fell to zero draft acceptance (lost replay records); being debugged |
+| `ab-hc` (+ W8A16 hyperconnections, 192 projections) | 117.3 / 122.9 | 85.9% / 0.215 / +0.045 | rejected: no speed gain |
+| `ab-idxfp8` (+ FP8 indexer keys) | 119.3 / 127.0 | 86.7% / 0.206 / +0.048 | undecided: the ~2k-token fidelity sequences are below the 2,048-token selection budget, so selection is unchanged there; needs a long-context check |
