@@ -82,9 +82,9 @@ def _record(state, slot, slot_stride, vh, vb, V: tl.constexpr, K: tl.constexpr, 
 def _gdn_replay_decode_kernel(
         qkv, qkv_row, a, a_row, b, b_row, a_log, dt_bias,
         indices, indices_row, cu_seqlens, accepted_ptr,
-        state, slot_stride, out, H, HV, scale,
+        state, slot_stride, out, H, HV, scale, debug,
         K: tl.constexpr, V: tl.constexpr, BV: tl.constexpr, RATIO: tl.constexpr, MAXT: tl.constexpr,
-        MAGIC_: tl.constexpr):
+        MAGIC_: tl.constexpr, DEBUG: tl.constexpr):
     """One (request, value head, block of BV value rows). Writes BF16 attention outputs before the gated norm."""
     req = tl.program_id(0)
     vh = tl.program_id(1)
@@ -113,6 +113,18 @@ def _gdn_replay_decode_kernel(
     count = tl.load(meta + 4, mask=ok, other=0)
     mslot = tl.load(meta + 5, mask=ok, other=-1)
     valid = ok & (magic == MAGIC_) & (m1 == h1) & (m2 == h2) & (mslot == slot0) & (count >= 1)
+    if DEBUG:
+        if (vh == 0) & (vb == 0):
+            row = debug + req * 10
+            tl.store(row, slot0)
+            tl.store(row + 1, slot1)
+            tl.store(row + 2, accepted)
+            tl.store(row + 3, n)
+            tl.store(row + 4, (magic == MAGIC_).to(tl.int32))
+            tl.store(row + 5, ((m1 == h1) & (m2 == h2)).to(tl.int32))
+            tl.store(row + 6, mslot)
+            tl.store(row + 7, count)
+            tl.store(row + 8, valid.to(tl.int32))
 
     # Without a live record, start where vLLM's kernel would: the accepted position's slot.
     in_range = (accepted >= 1) & (accepted <= indices_row)
@@ -225,14 +237,14 @@ def _gdn_materialize_kernel(indices, indices_row, accepted_ptr, state, slot_stri
 
 
 def replay_decode(mixed_qkv, a, b, A_log, dt_bias, state_indices, cu_seqlens, num_accepted_tokens,
-                  state, output_gate, norm_weight, out, num_k_heads, scale, norm_eps, sigmoid_gate):
+                  state, output_gate, norm_weight, out, num_k_heads, scale, norm_eps, sigmoid_gate, debug=None):
     num_requests = state_indices.shape[0]
     HV, V, K = state.shape[1], state.shape[2], state.shape[3]
     _gdn_replay_decode_kernel[(num_requests, HV, V // BLOCK_V)](
         mixed_qkv, mixed_qkv.stride(0), a, a.stride(0), b, b.stride(0), A_log, dt_bias,
         state_indices, state_indices.stride(0), cu_seqlens, num_accepted_tokens,
-        state, state.stride(0), out, num_k_heads, HV, scale,
-        K=K, V=V, BV=BLOCK_V, RATIO=HV // num_k_heads, MAXT=MAX_TOKENS, MAGIC_=MAGIC,
+        state, state.stride(0), out, num_k_heads, HV, scale, debug if debug is not None else state_indices,
+        K=K, V=V, BV=BLOCK_V, RATIO=HV // num_k_heads, MAXT=MAX_TOKENS, MAGIC_=MAGIC, DEBUG=debug is not None,
         num_warps=4, num_stages=1)
     tokens = out.shape[0]
     if tokens:
@@ -254,6 +266,34 @@ def supported(state, state_indices, mixed_qkv):
             and state.shape[3] == 128 and state.stride(3) == 1 and state.stride(2) == 128
             and state.stride(1) == 128 * 128 and state_indices.shape[1] >= 2
             and state_indices.shape[1] <= MAX_TOKENS and mixed_qkv.stride(-1) == 1)
+
+
+# FLASHNEXT_GDN_REPLAY_DEBUG=1 (eager serving only): per step, the first replay layer reports
+# rows that could not use their replay record, and requests whose slots changed.
+DEBUG = __import__('os').environ.get('FLASHNEXT_GDN_REPLAY_DEBUG') == '1'
+_debug_state = {'layer': None, 'steps': 0, 'fallbacks': 0, 'slots': {}}
+
+
+def _debug_report(logger, rows, indices):
+    st = _debug_state
+    st['steps'] += 1
+    seen = st['slots']
+    for row, idx in zip(rows, indices):
+        slot0, slot1, accepted, n, magic_ok, hash_ok, mslot, count, valid = row[:9]
+        if n <= 0 or slot0 <= 0:
+            continue
+        previous = seen.get(slot0)
+        if previous is not None and previous != idx:
+            logger.warning('GDN replay debug step %d: slots of the request at slot0=%d changed %s -> %s',
+                           st['steps'], slot0, previous, idx)
+        seen[slot0] = idx
+        if not valid and previous is not None:
+            st['fallbacks'] += 1
+            logger.warning('GDN replay debug step %d: fallback slot0=%d slot1=%d accepted=%d n=%d magic_ok=%d '
+                           'hash_ok=%d record_slot0=%d count=%d row=%s', st['steps'], slot0, slot1, accepted, n,
+                           magic_ok, hash_ok, mslot, count, idx)
+    if st['steps'] % 500 == 0:
+        logger.info('GDN replay debug: %d steps, %d fallbacks after the first step', st['steps'], st['fallbacks'])
 
 
 def register_gdn_replay():
@@ -311,6 +351,11 @@ def register_gdn_replay():
             state = self.kv_cache[1]
             if state.dtype == torch.bfloat16:
                 materialize(metadata.flashnext_rows, metadata.flashnext_accepted, state)
+                if DEBUG and _debug_state['layer'] == self.prefix and not torch.cuda.is_current_stream_capturing():
+                    logger.warning('GDN replay debug step %d: non-fused path (prefills=%d decodes=%d spec=%d) '
+                                   'materialized rows %s accepted %s', _debug_state['steps'], metadata.num_prefills,
+                                   metadata.num_decodes, metadata.num_spec_decodes,
+                                   metadata.flashnext_rows.cpu().tolist(), metadata.flashnext_accepted.cpu().tolist())
         return original_core(self, mixed_qkv, b, a, core_attn_out)
 
     original_post_conv = Layer._forward_core_decode_spec_post_conv_fused_norm
@@ -322,11 +367,19 @@ def register_gdn_replay():
         if not supported(state, state_indices, mixed_qkv):
             return original_post_conv(self, mixed_qkv, b, a, output_gate, core_attn_out, attn_metadata)
         num_requests = attn_metadata.num_spec_decodes
+        debug = None
+        if DEBUG and not torch.cuda.is_current_stream_capturing():
+            if _debug_state['layer'] is None:
+                _debug_state['layer'] = self.prefix
+            if _debug_state['layer'] == self.prefix:
+                debug = torch.full((max(num_requests, 1), 10), -9, dtype=torch.int32, device=state.device)
         replay_decode(mixed_qkv, a, b, self.A_log, self.dt_bias, state_indices[:num_requests],
                       attn_metadata.spec_query_start_loc[:num_requests + 1],
                       attn_metadata.num_accepted_tokens[:num_requests], state, output_gate,
                       self.norm.weight, core_attn_out, self.num_k_heads // self.tp_size,
-                      self.head_k_dim ** -0.5, self.layer_norm_epsilon, self.norm.activation == 'sigmoid')
+                      self.head_k_dim ** -0.5, self.layer_norm_epsilon, self.norm.activation == 'sigmoid', debug)
+        if debug is not None:
+            _debug_report(logger, debug.cpu().tolist(), state_indices[:num_requests].cpu().tolist())
 
     Layer._forward_core = _forward_core
     Layer._forward_core_decode_spec_post_conv_fused_norm = _forward_core_decode_spec_post_conv_fused_norm
