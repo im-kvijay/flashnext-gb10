@@ -7,5 +7,5 @@
   "minimum_context_per_agent": 200000,
   "minimum_concurrent_agents": 8,
   "minimum_aggregate_output_tokens_per_second": 400,
-  "release_status": "unqualified"
+  "release_status": "validated v0.1-gb10: 131.3 tok/s at 8 x 200k; the 400 tok/s target was not met"
 }

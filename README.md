@@ -4,18 +4,28 @@
 The step-by-step guide, requirements, expected numbers and troubleshooting are
 in [`docs/setup-gb10.md`](docs/setup-gb10.md).
 
-Work in progress: this is not yet a qualified release.
+**Status: released and validated** ([`v0.1-gb10`](https://github.com/im-kvijay/flashnext-gb10/releases/tag/v0.1-gb10)).
+Eight concurrent agents with 212,992 tokens of context each on one GB10, NVIDIA's
+complete Qwen3.8-Flash-Next NVFP4 checkpoint:
 
-Target: Qwen3.8-Flash-Next, eight concurrent agents, **at least 200,000 tokens
-per agent**, **at least 400 aggregate output tokens/second**, and measured retention of reasoning,
-coding, instruction following, tool use, and long-context retrieval.
+- 131.3 aggregate output tokens/s with eight distinct 200k-token contexts
+  decoding together; 120-128 on a natural coding workload at 4k.
+- No measured quality loss against the base model served with stock vLLM
+  settings: everyday tasks, multi-turn tool use, retrieval, HumanEval, GSM8K,
+  MMLU-Pro and LiveCodeBench (details in [`docs/validation.md`](docs/validation.md)).
 
-The baseline is NVIDIA's complete NVFP4 checkpoint, pinned in `runtime.lock.json`.
+The project's original target of 400 tokens/s at 8 x 200k was not reached and is
+not reachable losslessly on one GB10: every decode step reads about 17 GB of
+routed-expert weights, 69 ms at the GB10's memory bandwidth, which caps lossless
+throughput near 210 tokens/s even if every drafted token were accepted
+([`docs/roofline.md`](docs/roofline.md), [`docs/optimizations.md`](docs/optimizations.md)).
+The fixed GDN replay kernel on `main` (+9-14% at 4k, about +3% at 200k) is off in
+the profile until its task-suite comparison with the base model is run.
+
 The NVMe PLE backend retains the checkpoint table bytes and scale, preserves
 upstream n-gram hashing, and moves only requested rows into pinned staging memory.
 It does not prune experts, change the chat template, truncate requests, or reduce
-the requested context. Quantization relative to original BF16 still needs separate
-quality evidence. Megakernel-style fusion will be selected using actual profiles.
+the requested context.
 
 Code is independent of the earlier Qwen27B training project. No credentials,
 checkpoints, rented-machine addresses, or local absolute paths belong in git.
@@ -59,8 +69,7 @@ bash scripts/bootstrap.sh
 The bootstrap installs the locked runtime and verifies the pinned checkpoint's
 LFS hashes. It downloads one checkpoint copy. `FLASHNEXT_RUNTIME` selects another
 virtual environment path; use that environment's Python for the benchmark tools.
-The server listens on localhost:8000 and uses the OpenAI-compatible API. This
-development setup is reproducible, but has not met the release requirements.
+The server listens on localhost:8000 and uses the OpenAI-compatible API.
 
 ## Recommended profile: eight agents at 200k
 
