@@ -435,3 +435,16 @@ mostly PLE row reads (24% of prefill wall time on the rented host's disk).
   TFLOPS (BF16 cuBLAS: 89-99). `FLASHNEXT_W8A16_PREFILL=<tuner JSON>`.
 - Larger chunks amortize the per-chunk expert streaming (4k and 8k measured
   next).
+- 4,096-token chunks: cold 200k 152 -> 108 s; with the prefill W8A16 path 90 s
+  (2,212 tok/s, 2.4x the baseline), eight 12k appends at 200k depth 3,221
+  tok/s. 8,192-token chunks reached 2,160 tok/s at 64k but fell below the 6 GiB
+  host floor during the 200k fill (6.29 GB available); 4,096 kept at least 7.1
+  GB.
+- Fidelity of the prefill path (`ab-prefillw8`) against the BF16-dense
+  reference `m1-marlin`: workload top-1 96.6%, KL 0.0072; codebase top-1 86.7%,
+  KL 0.202, NLL +0.015. The current profile without it scores 96.6% / 0.0072 and
+  86.8% / 0.208 / +0.029, so the dequantize + cuBLAS path adds no measurable
+  shift. Both are in `profiles/gb10-8x200k.env`.
+- Decode A/B `ab-bf16` (Triton decode GEMM for the small BF16 projections):
+  workload 121.3 / 128.3 tok/s vs 125.3 / 127.6 without, within noise; not
+  adopted.
