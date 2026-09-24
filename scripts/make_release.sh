@@ -22,7 +22,7 @@ while (($#)); do
     --fidelity-dense) SRC[reference/fidelity-bf16-dense.json]=$2; shift 2;;
     --fidelity-profile) SRC[reference/fidelity-profile.json]=$2; shift 2;;
     --base-dir) for f in suite.json retention.json normal-tasks.json tools-c8-4k.json fidelity.json; do
-                  [[ -f $2/$f ]] && SRC[reference/base/$f]=$2/$f; done; shift 2;;
+                  if [[ -f $2/$f ]]; then SRC[reference/base/$f]=$2/$f; fi; done; shift 2;;
     --out) OUT=$2; shift 2;;
     *) echo "unknown option $1" >&2; exit 2;;
   esac
