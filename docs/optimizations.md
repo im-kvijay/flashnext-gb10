@@ -454,7 +454,17 @@ mostly PLE row reads (24% of prefill wall time on the rented host's disk).
 | Run | Workload / repeat tok/s | Codebase top-1 / KL / NLL | Decision |
 |---|---|---|---|
 | `ab-bf16` (profile + Triton decode GEMM) | 121.3 / 128.3 | 86.8% / 0.208 / +0.029 | reference |
-| `ab-gdn` (+ GDN replay) | 128.2 / 139.3 | prefill-only metric, not affected | not adopted: after one request finished early, three of seven fell to zero draft acceptance (lost replay records); being debugged |
+| `ab-gdn` / `ab-gdn2` (+ GDN replay; `ab-gdn2` with the block-boundary conversion) | 128.2 / 139.3; 131.3 / 132.5 | prefill-only metric, not affected | rejected: streams collapse into repeated tokens (`scripts/check_degenerate.py`: 5 in `ab-gdn`, 4 in `ab-gdn2`). Align-mode block copies read slots the replay never wrote; converting rows near boundaries fixed the kernel-level check (`scripts/check_gdn_replay.py`, including a simulated block move) but not serving, so another reader of the per-position slots remains. Off. |
 | `ab-hc` (+ W8A16 hyperconnections, 192 projections) | 117.3 / 122.9 | 85.9% / 0.215 / +0.045 | rejected: no speed gain |
 | `ab-idxfp8` (+ FP8 indexer keys) | 119.3 / 127.0 | 86.7% / 0.206 / +0.048 | undecided: the ~2k-token fidelity sequences are below the 2,048-token selection budget, so selection is unchanged there; needs a long-context check |
 | `ab-draftfast` (+ W8A16 MTP block, FP8 reduced draft head, Marlin draft experts) | 121.4 / 125.8 (throughput 178.6 vs 169.5) | draft-only, target unchanged | not adopted: applied to all 10 MTP projections, accepted length unchanged, no workload gain |
+
+## Final profile at 8 x 200k (September 24)
+
+`final-8x200k` (4,096-token prefill chunks, 6x-data drafter): eight 200k
+contexts primed in 731 s, then the server stopped at the 6 GiB host-memory
+floor about 20 s into the eight continuations (5.73 GiB available; median
+9.55 GiB during the run). All eight continuations prefill their uncached tails
+together, and the sparse-attention index scores scale with chunk size times
+context, so the profile now uses 2,048-token chunks (1,024 kept at least
+7.5 GiB in `cap200k-prof`).
