@@ -1,5 +1,9 @@
 # Flash Next on GB10
 
+**Set up a new GB10:** `bash scripts/setup_gb10.sh`, then `bash scripts/start.sh`.
+The step-by-step guide, requirements, expected numbers and troubleshooting are
+in [`docs/setup-gb10.md`](docs/setup-gb10.md).
+
 Work in progress: this is not yet a qualified release.
 
 Target: Qwen3.8-Flash-Next, eight concurrent agents, **at least 200,000 tokens
