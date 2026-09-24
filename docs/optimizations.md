@@ -398,3 +398,40 @@ The first measurement after priming (same settings as the last row) was
 ones. The 200k decode profile with early prefetch shows 93.6% GPU busy, about
 9 ms of idle per step. On a host whose NVMe is not behind a loop device the
 remaining reads take about 1-2 ms.
+
+## Decode kernels at 8 x 200k (September 23-24)
+
+Measured in isolation on GB10 (CUDA graphs, weights larger than L2):
+
+| Component | Result |
+|---|---|
+| Routed MoE (Marlin W4A16) | 227 GB/s at the observed 129 distinct experts per layer for 32 tokens: at the bandwidth ceiling |
+| GDN MTP decode, vLLM (state after every position written) | 309 us per layer |
+| GDN replay decode (`FLASHNEXT_GDN_REPLAY=1`, one state write per step) | 167 us per layer, about 5 ms per step saved; matches vLLM's op to 2e-3 over multi-step runs with random acceptance |
+| QSA decode indexer | 192 GB/s on BF16 keys; launch tuning saves 0.04 ms per step, not adopted |
+| Small BF16 projections (hyperconnections, shared experts, router) | cuBLAS already 205-220 GB/s; a Triton decode GEMM adds 2-5% |
+| Reduced draft head (29,977 rows) | cuBLAS FP32 GEMV at 187 GB/s; `FLASHNEXT_DRAFT_HEAD_W8=1` streams it as FP8 blocks |
+
+The hyperconnection projections (about 1.9 GB per step) are bandwidth-bound in
+BF16; `FLASHNEXT_W8A16_HC=1` now actually applies (they are built with
+`quant_config=None`) and is gated on fidelity like the FP8 indexer keys
+(`FLASHNEXT_INDEXER_KV_DTYPE=fp8`).
+
+## Prefill
+
+`bench/prefill.py` measures cold fills and file-sized appends at 200k depth on
+real source. Baseline (1,024-token chunks, `prefill-prof`): cold 200k fill 217 s
+(920 tok/s), 4k append at 200k depth 6.0 s, eight concurrent 12k appends 1,359
+tok/s. Per 1,024-token step (about 780 ms): Marlin MoE 266 ms, which is the time
+to stream all 68 GB of experts once (every chunk routes to all 512 experts);
+W8A16 projections 138 ms, compute-bound; QSA 58 ms; about 165 ms of GPU idle,
+mostly PLE row reads (24% of prefill wall time on the rented host's disk).
+
+- `FLASHNEXT_PLE_PREFILL_AHEAD=8192` reads the next prompt rows on a CPU thread
+  while the GPU computes: cold 200k 217 -> 152 s (1,314 tok/s), eight 12k
+  appends 1,359 -> 2,040 tok/s. Lossless; in the 8 x 200k profile.
+- W8A16 at prefill sizes: the Triton tile ran GDN in_proj and QSA qkv at 27
+  TFLOPS; dequantizing the FP8 blocks to BF16 and calling cuBLAS reaches 55-88
+  TFLOPS (BF16 cuBLAS: 89-99). `FLASHNEXT_W8A16_PREFILL=<tuner JSON>`.
+- Larger chunks amortize the per-chunk expert streaming (4k and 8k measured
+  next).
