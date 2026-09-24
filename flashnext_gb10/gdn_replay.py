@@ -489,17 +489,43 @@ def register_gdn_replay():
     Runner = gpu_model_runner.GPUModelRunner
     original_update = Runner._update_states_after_model_execute
 
+    def convert_near_boundaries():
+        for builder in _BUILDERS:
+            n = builder._flashnext_n
+            states = _GROUP_STATES.get(id(builder))
+            if n and states:
+                to_vllm_layout(list(states.values()), builder._flashnext_rows[:n], builder._flashnext_seq[:n],
+                               builder.kv_cache_spec.block_size, builder.num_spec + 2)
+
     def _update_states_after_model_execute(self, output_token_ids, scheduler_output):
         if self.speculative_config and self.cache_config.mamba_cache_mode == 'align':
-            for builder in _BUILDERS:
-                n = builder._flashnext_n
-                states = _GROUP_STATES.get(id(builder))
-                if n and states:
-                    to_vllm_layout(list(states.values()), builder._flashnext_rows[:n], builder._flashnext_seq[:n],
-                                   builder.kv_cache_spec.block_size, builder.num_spec + 2)
+            convert_near_boundaries()
         return original_update(self, output_token_ids, scheduler_output)
 
     Runner._update_states_after_model_execute = _update_states_after_model_execute
+
+    # The V2 model runner does the same copies in MambaHybridModelState.postprocess_state (after the
+    # step) and preprocess_state (before the next one).
+    try:
+        from vllm.v1.worker.gpu.model_states import mamba_hybrid
+    except ImportError:
+        mamba_hybrid = None
+    if mamba_hybrid is not None:
+        State = mamba_hybrid.MambaHybridModelState
+        original_post, original_pre = State.postprocess_state, State.preprocess_state
+
+        def postprocess_state(self, *args, **kwargs):
+            if getattr(self, '_align_mode', False):
+                convert_near_boundaries()
+            return original_post(self, *args, **kwargs)
+
+        def preprocess_state(self, *args, **kwargs):
+            if getattr(self, '_align_mode', False):
+                convert_near_boundaries()
+            return original_pre(self, *args, **kwargs)
+
+        State.postprocess_state = postprocess_state
+        State.preprocess_state = preprocess_state
     Layer._forward_core = _forward_core
     Layer._forward_core_decode_spec_post_conv_fused_norm = _forward_core_decode_spec_post_conv_fused_norm
     Layer._flashnext_gdn_replay = True
