@@ -19,6 +19,7 @@ bash scripts/start.sh                                         # first start 20-3
 bash scripts/smoke_test.sh                                    # chat, tool call, 8 agents at 4k
 bash scripts/verify_fidelity.sh                               # numerics match the reference host
 bash scripts/smoke_test.sh --long                             # 8 distinct 200k contexts
+bash scripts/quality_check.sh                                 # ~2 h: suite, tools, retrieval, everyday tasks vs base model
 ```
 
 From a plain clone (no drafter file): the same commands work. The server then
@@ -61,6 +62,7 @@ verified against Hugging Face, then recorded in `DIR/verified-lfs.json`).
 | `scripts/start.sh` | reads `profiles/gb10-8x200k.env`, then `flashnext.local.env`, then your exported variables; starts vLLM under `scripts/supervise.py`, which stops the server if host memory stays below the floor (6 GiB) instead of letting the machine lock up. Extra arguments go to `vllm serve` (e.g. `--api-key KEY`). |
 | `scripts/smoke_test.sh` | waits for `/health`, checks a chat answer and a tool call, runs eight concurrent 4k coding agents and prints throughput and draft acceptance; `--long` adds eight distinct 200k-token codebase contexts. |
 | `scripts/verify_fidelity.sh` | teacher-forced scoring of 16 sequences against the reference host's records: top-1 agreement and KL against the unquantized-dense reference and against the same profile on the reference host. |
+| `scripts/quality_check.sh` | everyday tasks (`bench/normal_tasks.py`), eight-agent multi-turn tool use, long-context retrieval and the task suite (LiveCodeBench v6, HumanEval, GSM8K, MMLU-Pro), compared item by item with the base model's results from the bundle; `--quick` skips the suite. |
 | `scripts/build_drafter.sh` | KodCode prompts, target generations, drafter-input capture, MTP weight extraction and training (`experiments/drafter/`). |
 | `scripts/make_release.sh` | builds a bundle: `git archive` of a commit plus `release/` (drafter, reference records, SHA256SUMS). |
 
