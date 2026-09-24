@@ -82,7 +82,7 @@ def _record(state, slot, slot_stride, vh, vb, V: tl.constexpr, K: tl.constexpr, 
 def _gdn_replay_decode_kernel(
         qkv, qkv_row, a, a_row, b, b_row, a_log, dt_bias,
         indices, indices_row, cu_seqlens, accepted_ptr,
-        state, slot_stride, out, H, HV, scale, debug,
+        state, slot_stride, out, H, HV, scale, dbg,
         K: tl.constexpr, V: tl.constexpr, BV: tl.constexpr, RATIO: tl.constexpr, MAXT: tl.constexpr,
         MAGIC_: tl.constexpr, DEBUG: tl.constexpr):
     """One (request, value head, block of BV value rows). Writes BF16 attention outputs before the gated norm."""
@@ -115,7 +115,7 @@ def _gdn_replay_decode_kernel(
     valid = ok & (magic == MAGIC_) & (m1 == h1) & (m2 == h2) & (mslot == slot0) & (count >= 1)
     if DEBUG:
         if (vh == 0) & (vb == 0):
-            row = debug + req * 10
+            row = dbg + req * 10
             tl.store(row, slot0)
             tl.store(row + 1, slot1)
             tl.store(row + 2, accepted)
