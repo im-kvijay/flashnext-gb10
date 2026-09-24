@@ -60,4 +60,4 @@ its verification are unchanged, so outputs are unchanged.
 |---|---|---|---|
 | checkpoint MTP | - | 2.65 | 2.53 (`cap200k-marlin`) |
 | retrained, 1 epoch | 96 generations | 2.87 (from 2.65 on its held-out set) | 2.64 (`cap200k-trained`) |
-| retrained, 1 epoch (`trained2`) | 576 generations, 1.08M tokens | 2.91 (from 2.57 on its held-out set) | see the final 8 x 200k run |
+| retrained, 1 epoch (`trained2`) | 576 generations, 1.08M tokens | 2.91 (from 2.57 on its held-out set) | 2.73 (`final2-8x200k`) |

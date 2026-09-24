@@ -33,3 +33,8 @@ configuration by 6 or 7. All five of the recipe's lost items were cut off at
 16,384 tokens (the base finished them in 9,400-14,000). HumanEval (37/40) and
 GSM8K (20/20) are identical in all six runs; MMLU-Pro ranges 21-24. A
 32k-token LiveCodeBench comparison, where most answers can finish, is below.
+
+The shipped profile uses 2,048-token prefill chunks (the table above was
+measured with 4,096). Its 8 x 200k run (`final2-8x200k`) re-checked fidelity
+(96.5% / 0.0071 coding-agent text, 85.8% / 0.219 raw source) and everyday
+tasks (24/24) on the same server.

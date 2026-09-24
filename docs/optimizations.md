@@ -468,3 +468,10 @@ floor about 20 s into the eight continuations (5.73 GiB available; median
 together, and the sparse-attention index scores scale with chunk size times
 context, so the profile now uses 2,048-token chunks (1,024 kept at least
 7.5 GiB in `cap200k-prof`).
+
+`final2-8x200k` (2,048-token chunks, 6x-data drafter, GDN replay off): eight
+200k contexts primed in 844 s, then 131.3 tok/s with all eight decoding
+together (107.8 s overlap), accepted length 2.73, no errors or degenerate
+streams, host memory at least 6.82 GiB. Same server: fidelity 96.5% / 0.0071
+(workload) and 85.8% / 0.219 (codebase) against `m1-marlin`, everyday tasks
+24/24.

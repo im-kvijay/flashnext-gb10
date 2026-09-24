@@ -75,10 +75,10 @@ set -a; . profiles/gb10-8x200k.env; set +a
 
 Measured at eight concurrent streams on the rented GB10 (see
 `docs/optimizations.md` and `docs/setup-gb10.md`): 132.7 aggregate output
-tokens/s with eight distinct 200k-token contexts decoding together, 120-128 on
-a natural coding workload at 4k; a cold 200k-token prompt prefills in 90 s
-(2,212 tok/s) and eight concurrent 12k-token appends at 200k depth reach
-3,221 tok/s. No activations are quantized: routed experts run their NVFP4
+tokens/s with eight distinct 200k-token contexts decoding together (131.3 on
+the final profile's first decode after priming), 120-128 on a natural coding
+workload at 4k; eight 200k contexts prime in 844 s (about 1,900 tok/s).
+Quality against the base model: `docs/validation.md`. No activations are quantized: routed experts run their NVFP4
 weights with BF16 activations (Marlin), and the GDN/QSA projections use FP8
 weights with BF16 activations. The default NVFP4 MoE kernel also rounds
 activations to FP4, which adds 7-10% error to every MoE output and makes
