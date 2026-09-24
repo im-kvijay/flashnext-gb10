@@ -40,5 +40,5 @@ done
 (cd "$STAGE/$NAME/release" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 mkdir -p "$OUT"
 tar -C "$STAGE" -czf "$OUT/$NAME.tar.gz" "$NAME"
-sha256sum "$OUT/$NAME.tar.gz" | tee "$OUT/$NAME.tar.gz.sha256"
+(cd "$OUT" && sha256sum "$NAME.tar.gz" | tee "$NAME.tar.gz.sha256")
 cat "$STAGE/$NAME/release/SHA256SUMS"
