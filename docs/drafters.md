@@ -41,3 +41,22 @@ Native MTP is the first measured candidate. A draft-only reduced vocabulary
 projection is also staged. It changes proposals, while leaving target logits,
 target vocabulary, and target verification intact. Correct implementation and
 sampling behavior still require validation before release.
+
+## Retrained MTP drafter (self-distillation)
+
+The served drafter is the checkpoint's own MTP block with its non-expert
+weights retrained on the served target (`experiments/drafter/`,
+`scripts/build_drafter.sh`). The target generates answers to
+KodCode-Light-RL-10K prompts (disjoint from every benchmark here); an eager
+server replays them and saves the drafter's inputs per prefill chunk
+(`FLASHNEXT_CAPTURE_MTP_DIR`); `train_mtp.py` unrolls the three draft steps
+exactly as served (FP8 KV rounding, reused step-1 keys and values, reduced
+draft vocabulary) and minimizes KL to the target's next-token distribution.
+Routed experts, embeddings and lm_head stay frozen unless `--train-experts`.
+The result is loaded with `FLASHNEXT_MTP_OVERRIDE=<file.pt>`; the target and
+its verification are unchanged, so outputs are unchanged.
+
+| Drafter | Data | Held-out expected accepted length | Served accepted length, 8 x 200k |
+|---|---|---|---|
+| checkpoint MTP | - | 2.65 | 2.53 (`cap200k-marlin`) |
+| retrained, 1 epoch | 96 generations | 2.87 | 2.64 (`cap200k-trained`) |
