@@ -2,7 +2,9 @@
 # Build a self-contained release bundle: this repository at HEAD plus the files git does not carry.
 #   bash scripts/make_release.sh --drafter mtp_trained.pt [--drafter-report report.json] \
 #        --fidelity-source profile-workload-c8-4k.json --fidelity-dense fidelity.json \
-#        --fidelity-profile fidelity.json [--out dist]
+#        --fidelity-profile fidelity.json [--base-dir DIR] [--out dist]
+# --base-dir: the base model's quality results (suite, retention, everyday tasks, tools, fidelity) that
+# scripts/quality_check.sh compares against.
 # Writes <out>/flashnext-gb10-<commit>.tar.gz. On the target GB10:
 #   tar xzf flashnext-gb10-<commit>.tar.gz && cd flashnext-gb10-<commit> && bash scripts/setup_gb10.sh
 # setup_gb10.sh picks up release/drafter/mtp_trained.pt automatically. Refuses a dirty tree so the
@@ -19,6 +21,8 @@ while (($#)); do
     --fidelity-source) SRC[reference/fidelity-source.json]=$2; shift 2;;
     --fidelity-dense) SRC[reference/fidelity-bf16-dense.json]=$2; shift 2;;
     --fidelity-profile) SRC[reference/fidelity-profile.json]=$2; shift 2;;
+    --base-dir) for f in suite.json retention.json normal-tasks.json tools-c8-4k.json fidelity.json; do
+                  [[ -f $2/$f ]] && SRC[reference/base/$f]=$2/$f; done; shift 2;;
     --out) OUT=$2; shift 2;;
     *) echo "unknown option $1" >&2; exit 2;;
   esac
