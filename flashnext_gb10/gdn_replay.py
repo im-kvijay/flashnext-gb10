@@ -23,6 +23,14 @@ usual slot for the accepted position. Before any non-fused path runs, rows
 with a live record are materialized: the current state is written both to
 the first slot and to the accepted position's slot, which is where vLLM's
 other kernels look.
+
+With prefix caching, vLLM's "align" mamba cache mode copies a request's
+state between blocks when its sequence crosses a block boundary (a
+prefix-cache snapshot after the step, and the running state into the next
+block before the following step), reading the slot of the accepted position.
+After each step, rows within a few tokens of a boundary are therefore
+converted back to vLLM's layout (the state after every position of the step
+in its own slot) before those copies run.
 """
 import torch
 import triton
@@ -236,6 +244,67 @@ def _gdn_materialize_kernel(indices, indices_row, accepted_ptr, state, slot_stri
         tl.store(meta, 0)
 
 
+@triton.jit
+def _gdn_to_vllm_kernel(state_ptrs, indices, indices_row, seq_lens, scratch, slot_stride, block_size, window,
+                        HV, K: tl.constexpr, V: tl.constexpr, BV: tl.constexpr, MAXT: tl.constexpr,
+                        MAGIC_: tl.constexpr):
+    """Rows near a block boundary: write the state after each recorded position t to slot t (vLLM's layout).
+
+    Grid (request, HV * V // BV, layer). The record lies in slot 1, which is overwritten from
+    position 1 on, so it is first staged in scratch.
+    """
+    req = tl.program_id(0)
+    vh = tl.program_id(1) // (V // BV)
+    vb = tl.program_id(1) % (V // BV)
+    layer = tl.program_id(2)
+    seq = tl.load(seq_lens + req)
+    if (seq - window) // block_size == (seq + window) // block_size:
+        return
+    slot0 = tl.load(indices + req * indices_row)
+    slot1 = tl.load(indices + req * indices_row + 1)
+    if (slot0 <= 0) | (slot1 <= 0):
+        return
+    state = tl.load(state_ptrs + layer).to(tl.pointer_type(tl.bfloat16))
+    offs_k = tl.arange(0, K)
+    offs_v = vb * BV + tl.arange(0, BV)
+    head = vh * V * K
+    tile = offs_v[:, None] * K + offs_k[None, :]
+    rec, meta = _record(state, slot1, slot_stride, vh, vb, V, K, BV, MAXT)
+    if tl.load(meta) != MAGIC_:
+        return
+    base0 = state + slot0.to(tl.int64) * slot_stride + head
+    raw = tl.load(base0 + tile)
+    h1, h2 = _fingerprint(raw.to(tl.int16, bitcast=True).to(tl.int32), tile)
+    m2 = tl.load(meta + 2).to(tl.int64) & 0xFFFFFFFF
+    m2 = m2 | (tl.load(meta + 3).to(tl.int64) << 32)
+    count = tl.load(meta + 4)
+    valid = (tl.load(meta + 1) == h1) & (m2 == h2) & (tl.load(meta + 5) == slot0) & (count >= 1)
+    if not valid:
+        return
+    count = tl.minimum(count, indices_row)
+    words = MAXT * (K + BV + 2)
+    offs_w = tl.arange(0, 2048)
+    tl.static_assert(MAXT * (K + BV + 2) <= 2048)
+    pid = (req * tl.num_programs(2) + layer) * tl.num_programs(1) + tl.program_id(1)
+    stage = scratch + pid.to(tl.int64) * 2048
+    tl.store(stage + offs_w, tl.load(rec + offs_w, mask=offs_w < words, other=0.0), mask=offs_w < words)
+    tl.debug_barrier()
+    h = raw.to(tl.float32)
+    for t in range(count):
+        k = tl.load(stage + t * K + offs_k)
+        v = tl.load(stage + MAXT * K + t * BV + tl.arange(0, BV))
+        decay = tl.load(stage + MAXT * (K + BV) + t)
+        beta = tl.load(stage + MAXT * (K + BV) + MAXT + t)
+        h = h * decay
+        hk = tl.sum(h * k[None, :], 1)
+        h = h + ((v - hk) * beta)[:, None] * k[None, :]
+        dst = tl.load(indices + req * indices_row + t)
+        if dst > 0:
+            tl.store(state + dst.to(tl.int64) * slot_stride + head + tile, h.to(tl.bfloat16))
+    if count < 2:
+        tl.store(meta, 0)
+
+
 def replay_decode(mixed_qkv, a, b, A_log, dt_bias, state_indices, cu_seqlens, num_accepted_tokens,
                   state, output_gate, norm_weight, out, num_k_heads, scale, norm_eps, sigmoid_gate, debug=None):
     num_requests = state_indices.shape[0]
@@ -258,6 +327,30 @@ def materialize(rows, accepted, state):
     HV, V, K = state.shape[1], state.shape[2], state.shape[3]
     _gdn_materialize_kernel[(rows.shape[0], HV, V // BLOCK_V)](
         rows, rows.stride(0), accepted, state, state.stride(0),
+        K=K, V=V, BV=BLOCK_V, MAXT=MAX_TOKENS, MAGIC_=MAGIC, num_warps=4, num_stages=1)
+
+
+_convert_cache = {}
+_BUILDERS = []  # GDN metadata builders (one per KV-cache group) with replay buffers
+_GROUP_STATES = {}  # id(builder) -> {layer prefix: recurrent state tensor}
+
+
+def to_vllm_layout(states, rows, seq_lens, block_size, window):
+    """Launch _gdn_to_vllm_kernel over one KV-cache group's GDN state tensors (same slot layout)."""
+    n = rows.shape[0]
+    if n == 0 or not states:
+        return
+    first = states[0]
+    HV, V, K = first.shape[1], first.shape[2], first.shape[3]
+    key = tuple(s.data_ptr() for s in states)
+    cached = _convert_cache.get(key)
+    if cached is None or cached[1].shape[0] < n * HV * (V // BLOCK_V) * len(states) * 2048:
+        ptrs = torch.tensor(key, dtype=torch.int64, device=first.device)
+        scratch = torch.empty(max(n, 8) * HV * (V // BLOCK_V) * len(states) * 2048, dtype=torch.float32,
+                              device=first.device)
+        cached = _convert_cache[key] = (ptrs, scratch)
+    _gdn_to_vllm_kernel[(n, HV * (V // BLOCK_V), len(states))](
+        cached[0], rows, rows.stride(0), seq_lens, cached[1], first.stride(0), block_size, window, HV,
         K=K, V=V, BV=BLOCK_V, MAXT=MAX_TOKENS, MAGIC_=MAGIC, num_warps=4, num_stages=1)
 
 
@@ -320,6 +413,8 @@ def register_gdn_replay():
                                   fast_build=fast_build)
         metadata.flashnext_rows = None
         metadata.flashnext_accepted = None
+        metadata.flashnext_gid = id(self)
+        self._flashnext_n = 0
         if not self.use_spec_decode or num_accepted_tokens is None:
             return metadata
         m = common_attn_metadata
@@ -329,11 +424,15 @@ def register_gdn_replay():
             rows = self._flashnext_rows = torch.zeros(self.vllm_config.scheduler_config.max_num_seqs * 2, width,
                                                       dtype=torch.int32, device=m.query_start_loc.device)
             self._flashnext_accepted = torch.ones(rows.shape[0], dtype=torch.int32, device=rows.device)
+            self._flashnext_seq = torch.zeros(rows.shape[0], dtype=torch.int32, device=rows.device)
+            _BUILDERS.append(self)
         n = min(m.num_reqs, num_accepted_tokens.shape[0], rows.shape[0])
         table = mamba_get_block_table_tensor(m.block_table_tensor, m.seq_lens, self.kv_cache_spec,
                                              self.vllm_config.cache_config.mamba_cache_mode)
         rows[:n].copy_(table[:n, :width], non_blocking=True)
         self._flashnext_accepted[:n].copy_(num_accepted_tokens[:n], non_blocking=True)
+        self._flashnext_seq[:n].copy_(m.seq_lens[:n], non_blocking=True)
+        self._flashnext_n = n
         metadata.flashnext_rows = rows[:n]
         metadata.flashnext_accepted = self._flashnext_accepted[:n]
         return metadata
@@ -366,6 +465,9 @@ def register_gdn_replay():
         state = self.kv_cache[1]
         if not supported(state, state_indices, mixed_qkv):
             return original_post_conv(self, mixed_qkv, b, a, output_gate, core_attn_out, attn_metadata)
+        gid = getattr(attn_metadata, 'flashnext_gid', None)
+        if gid is not None:
+            _GROUP_STATES.setdefault(gid, {})[self.prefix] = state
         num_requests = attn_metadata.num_spec_decodes
         debug = None
         if DEBUG and not torch.cuda.is_current_stream_capturing():
@@ -381,6 +483,23 @@ def register_gdn_replay():
         if debug is not None:
             _debug_report(logger, debug.cpu().tolist(), state_indices[:num_requests].cpu().tolist())
 
+    # Align-mode prefix caching copies states at block boundaries after the step (postprocess)
+    # and before the next one (preprocess), both from vLLM's per-position slots.
+    from vllm.v1.worker import gpu_model_runner
+    Runner = gpu_model_runner.GPUModelRunner
+    original_update = Runner._update_states_after_model_execute
+
+    def _update_states_after_model_execute(self, output_token_ids, scheduler_output):
+        if self.speculative_config and self.cache_config.mamba_cache_mode == 'align':
+            for builder in _BUILDERS:
+                n = builder._flashnext_n
+                states = _GROUP_STATES.get(id(builder))
+                if n and states:
+                    to_vllm_layout(list(states.values()), builder._flashnext_rows[:n], builder._flashnext_seq[:n],
+                                   builder.kv_cache_spec.block_size, builder.num_spec + 2)
+        return original_update(self, output_token_ids, scheduler_output)
+
+    Runner._update_states_after_model_execute = _update_states_after_model_execute
     Layer._forward_core = _forward_core
     Layer._forward_core_decode_spec_post_conv_fused_norm = _forward_core_decode_spec_post_conv_fused_norm
     Layer._flashnext_gdn_replay = True

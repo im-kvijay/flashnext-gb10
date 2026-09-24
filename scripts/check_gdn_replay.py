@@ -6,7 +6,10 @@ tokens and store it in BF16 after every token. Several requests run for
 several steps with random acceptance, and the replay kernel's outputs and
 current states are compared after each step. The run also crosses to a
 non-fused path (materialize, then the reference) and back, and starts from a
-freshly prefilled state. With --vllm, the reference is vLLM's CUDA op.
+freshly prefilled state. Then rows near a prefix-cache block boundary are
+converted to vLLM's layout (to_vllm_layout; two layers at once) and one
+request's running state is copied to new slots from its accepted position, as
+vLLM's align-mode preprocess does. With --vllm, the reference is vLLM's CUDA op.
 """
 import argparse
 import sys
@@ -16,7 +19,7 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from flashnext_gb10.gdn_replay import materialize, replay_decode  # noqa: E402
+from flashnext_gb10.gdn_replay import materialize, replay_decode, to_vllm_layout  # noqa: E402
 
 H, HV, K, V = 16, 48, 128, 128
 
@@ -58,13 +61,14 @@ def main():
     torch.manual_seed(0)
     dev = 'cuda'
     B, W = a_.requests, a_.width
-    slots = 1 + B * W + 3
+    slots = 1 + B * W + 3 + W
     A_log = torch.rand(HV, device=dev) * 2 - 3
     dt_bias = torch.randn(HV, device=dev) * 0.5
     norm_w = torch.rand(V, device=dev, dtype=torch.bfloat16) + 0.5
     scale, eps = K ** -0.5, 1e-6
-    perm = torch.randperm(slots - 1)[:B * W] + 1
-    rows = perm.view(B, W).to(torch.int32).to(dev)
+    perm = torch.randperm(slots - 1) + 1
+    rows = perm[:B * W].view(B, W).to(torch.int32).to(dev)
+    spare = perm[B * W:B * W + W].to(torch.int32).to(dev)
     init = (torch.randn(slots, HV, V, K, device=dev) * 0.05).bfloat16()
     init[0] = 0
     ref_state, rep_state = init.clone(), init.clone()
@@ -117,6 +121,27 @@ def main():
             s_err = max(s_err, ((ref_cur - rep_cur).abs().max() / ref_cur.abs().max()).item())
         worst_state = max(worst_state, s_err)
         print(f'step {step}: accepted next {accepted.tolist()}  output rel err {err:.2e}  state rel err {s_err:.2e}')
+        if step == 4:
+            # Prefix-cache block boundary (block 64): rows 0 and 2 sit within the window, the rest do not.
+            seq = torch.tensor([64 * (r + 2) + (1 if r in (0, 2) else 32) for r in range(B)], dtype=torch.int32,
+                               device=dev)
+            other = rep_state.clone()
+            to_vllm_layout([rep_state, other], rows, seq, 64, W + 1)
+            torch.cuda.synchronize()
+            c_err = 0.0
+            for st in (rep_state, other):
+                for r in (0, 2):
+                    for t in range(int(lens[r])):
+                        slot = int(rows[r, t])
+                        c_err = max(c_err, ((st[slot].float() - ref_state[slot].float()).abs().max()
+                                            / ref_state[slot].float().abs().max()).item())
+            print(f'  converted rows 0, 2 to per-position slots: rel err {c_err:.2e}')
+            worst_state = max(worst_state, c_err)
+            # vLLM's preprocess moves request 0's running state to a new block from its accepted slot.
+            for st in (ref_state, rep_state):
+                st[int(spare[0])] = st[int(rows[0, int(accepted[0]) - 1])]
+            rows[0] = spare
+            accepted[0] = 1
         if step == 6:
             # A prefill overwrites request 1's first slot; its record must be ignored.
             fresh = (torch.randn(HV, V, K, device=dev) * 0.05).bfloat16()
