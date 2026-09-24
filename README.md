@@ -30,6 +30,9 @@ upstream n-gram hashing, and moves only requested rows into pinned staging memor
 It does not prune experts, change the chat template, truncate requests, or reduce
 the requested context.
 
+The retrained drafter in `assets/` is a derivative of NVIDIA's checkpoint under the
+NVIDIA Open Model License ([`assets/NOTICE.md`](assets/NOTICE.md)).
+
 Code is independent of the earlier Qwen27B training project. No credentials,
 checkpoints, rented-machine addresses, or local absolute paths belong in git.
 
