@@ -457,3 +457,4 @@ mostly PLE row reads (24% of prefill wall time on the rented host's disk).
 | `ab-gdn` (+ GDN replay) | 128.2 / 139.3 | prefill-only metric, not affected | not adopted: after one request finished early, three of seven fell to zero draft acceptance (lost replay records); being debugged |
 | `ab-hc` (+ W8A16 hyperconnections, 192 projections) | 117.3 / 122.9 | 85.9% / 0.215 / +0.045 | rejected: no speed gain |
 | `ab-idxfp8` (+ FP8 indexer keys) | 119.3 / 127.0 | 86.7% / 0.206 / +0.048 | undecided: the ~2k-token fidelity sequences are below the 2,048-token selection budget, so selection is unchanged there; needs a long-context check |
+| `ab-draftfast` (+ W8A16 MTP block, FP8 reduced draft head, Marlin draft experts) | 121.4 / 125.8 (throughput 178.6 vs 169.5) | draft-only, target unchanged | not adopted: applied to all 10 MTP projections, accepted length unchanged, no workload gain |

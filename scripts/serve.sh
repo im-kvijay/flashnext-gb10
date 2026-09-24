@@ -89,7 +89,7 @@ if [[ ${FLASHNEXT_EAGER:-0} == 1 ]]; then EXTRA+=(--enforce-eager); fi
 # request, so eight MTP-3 agents need a 32-token target graph.
 CAPTURE_SIZES=${FLASHNEXT_CAPTURE_SIZES:-$("$RUNTIME/bin/python" -c 'import json,sys; n,k=map(int,sys.argv[1:]); assert n>0 and k>=0; print(json.dumps(sorted(set(range(1,n+1)) | {i*(k+1) for i in range(1,n+1)})))' "${FLASHNEXT_SEQUENCES:-8}" "${FLASHNEXT_MTP:-0}")}
 exec "$RUNTIME/bin/vllm" serve "$MODEL" \
-  --served-model-name flashnext --host 127.0.0.1 --port "${PORT:-8000}" \
+  --served-model-name flashnext --host "${FLASHNEXT_HOST:-127.0.0.1}" --port "${PORT:-8000}" \
   --max-model-len "${FLASHNEXT_CONTEXT:-212992}" \
   --max-num-seqs "${FLASHNEXT_SEQUENCES:-8}" \
   --max-num-batched-tokens "${FLASHNEXT_PREFILL:-2048}" \

@@ -12,3 +12,6 @@ results/*
 .env
 *.pem
 *.key
+flashnext.local.env
+dist/
+release/
