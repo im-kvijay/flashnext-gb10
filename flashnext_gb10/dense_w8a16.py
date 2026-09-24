@@ -72,6 +72,45 @@ def _w8a16_kernel(a_ptr, w_ptr, s_ptr, c_ptr, M, N, K, K_PER_SPLIT,
         tl.store(ptrs, acc.to(c_ptr.dtype.element_ty), mask=mask)
 
 
+# FLASHNEXT_W8A16_PREFILL=<scripts/tune_w8a16_prefill.py --output JSON>: (N, K) -> [(M, choice)],
+# choice 'dequant' (FP8 blocks -> BF16 scratch, then cuBLAS) or a Triton (BLOCK_M, BLOCK_N, warps, stages).
+PREFILL_CONFIGS = {}
+_SCRATCH = {}  # (N, K) -> BF16 dequantization buffer shared by all layers of that shape
+
+
+def _load_prefill(path):
+    import json
+    for key, row in json.loads(open(path).read()).items():
+        shape, m = key.split('@M')
+        n, k = (int(v) for v in shape.split('x'))
+        choice = 'dequant' if row['best'] == 'dequant_cublas' else (
+            tuple(row['triton_best']) if row['best'] != 'current' else None)
+        PREFILL_CONFIGS.setdefault((n, k), []).append((int(m), choice))
+    for rows in PREFILL_CONFIGS.values():
+        rows.sort()
+
+
+def _prefill_choice(N, K, M):
+    rows = PREFILL_CONFIGS.get((N, K))
+    if not rows:
+        return None
+    choice = rows[0][1]
+    for m, c in rows:
+        if m <= M:
+            choice = c
+    return choice
+
+
+def reserve_prefill_scratch(N, K, device):
+    """Allocate the shape's dequantization buffer at load time (never during graph capture)."""
+    if any(c == 'dequant' for _, c in PREFILL_CONFIGS.get((N, K), ())) and (N, K) not in _SCRATCH:
+        _SCRATCH[(N, K)] = torch.empty((N, K), dtype=torch.bfloat16, device=device)
+
+
+if os.environ.get('FLASHNEXT_W8A16_PREFILL'):
+    _load_prefill(os.environ['FLASHNEXT_W8A16_PREFILL'])
+
+
 def w8a16_gemm(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     M, K = x.shape
     N = weight.shape[0]
@@ -80,8 +119,16 @@ def w8a16_gemm(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor) -> to
         block_n, split_k, warps, stages = DECODE_CONFIGS.get((N, K), (64, 1, 4, 4))
         block_m = 16 if M <= 16 else 32
     else:
-        # Prefill chunks are compute-bound; a square-ish tile is enough.
+        # Prefill chunks are compute-bound. Default: a square-ish tile; with
+        # FLASHNEXT_W8A16_PREFILL, the tuned tile or dequantize + cuBLAS.
         block_n, split_k, warps, stages, block_m = 128, 1, 8, 3, 64
+        choice = _prefill_choice(N, K, M)
+        if choice == 'dequant':
+            w = _SCRATCH.get((N, K))
+            if w is not None:
+                return torch.nn.functional.linear(x, dequantize_block_fp8(weight, scale, out=w))
+        elif choice is not None:
+            block_m, block_n, warps, stages = choice
     block_k = min(128, scale_k)
     if K % (block_k * split_k):
         split_k = 1
@@ -120,6 +167,28 @@ def quantize_block_fp8(weight: torch.Tensor):
     return q.view(-1, K)[:N].contiguous(), scale.contiguous()
 
 
+@triton.jit
+def _dequant_kernel(q_ptr, s_ptr, w_ptr, N, K, stride_q, stride_s, stride_w,
+                    SCALE_K: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
+    offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_k = tl.program_id(1) * BLOCK_K + tl.arange(0, BLOCK_K)
+    mask = (offs_n[:, None] < N) & (offs_k[None, :] < K)
+    q = tl.load(q_ptr + offs_n[:, None] * stride_q + offs_k[None, :], mask=mask, other=0.0)
+    s = tl.load(s_ptr + (offs_n[:, None] // 128) * stride_s + offs_k[None, :] // SCALE_K, mask=mask, other=0.0)
+    tl.store(w_ptr + offs_n[:, None] * stride_w + offs_k[None, :], (q.to(tl.float32) * s).to(tl.bfloat16), mask=mask)
+
+
+def dequantize_block_fp8(q: torch.Tensor, scale: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
+    """Inverse of quantize_block_fp8: BF16 [N, K] = e4m3 value x its 128 x bk block scale."""
+    N, K = q.shape
+    if out is None:
+        out = torch.empty((N, K), dtype=torch.bfloat16, device=q.device)
+    grid = (triton.cdiv(N, 64), triton.cdiv(K, 128))
+    _dequant_kernel[grid](q, scale, out, N, K, q.stride(0), scale.stride(0), out.stride(0),
+                          SCALE_K=K // scale.shape[1], BLOCK_N=64, BLOCK_K=128, num_warps=4)
+    return out
+
+
 def register_dense_w8a16():
     from vllm.logger import init_logger
     from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
@@ -139,6 +208,7 @@ def register_dense_w8a16():
             layer.weight = torch.nn.Parameter(q, requires_grad=False)
             layer.register_buffer('flashnext_weight_scale', scale, persistent=False)
             layer._flashnext_w8a16 = True
+            reserve_prefill_scratch(q.shape[0], q.shape[1], q.device)
 
         def apply(self, layer, x, bias=None):
             shape = x.shape
