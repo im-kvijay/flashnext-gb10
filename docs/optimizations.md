@@ -497,3 +497,9 @@ run before those (`ab-gdn3`, `gdn-8x200k`, retrained drafter):
 
 Retraining the drafter's experts as well (`--train-experts`, 2.6B trainable
 parameters) ran out of memory on the GB10 and was dropped.
+
+Quality of the fixed GDN replay (`gdn-quality`, stopped before the task suite
+finished when the rental ended): everyday tasks 24/24, tools 8/8, retrieval
+11/12, fidelity 96.6% / 0.0072 (coding-agent text) and 86.2% / 0.210 (raw
+source) against `m1-marlin`, the same as without it. It stays off in the
+profile until the suite comparison with the base model is run.
