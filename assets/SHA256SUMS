@@ -1,0 +1,10 @@
+de18b706c88db33d078e3a3a85df0b01d5197131d0aca768fe694487abd83d98  ./drafter/mtp_trained.pt
+6d86eac5987b322d6cf7610d55b86ea4113804dc230bb0d4f0f448aae4d0632e  ./drafter/report.json
+3f466b494f3311aee4a0dc215fcfb75f8c2e11dfec9b8beb1039faa3fd4947d0  ./reference/base/fidelity.json
+7a4cdaf5a6a3ed0df7e3685660b1808f664f9e244b94c0eb832db2fd7dd283ae  ./reference/base/normal-tasks.json
+9ce1906ed2fdb90bc571a377935e96b7181be141a64afb059a748f79362a7074  ./reference/base/retention.json
+c76d1b57d1d423666e4549a1fe4ebc736cb4f3e25e1d48b92ffc49545c2de51c  ./reference/base/suite.json
+fdcc6a1a00abb2d77199939fc5fd0fb0dac58804e0aa45db3b2f726fd20170ca  ./reference/base/tools-c8-4k.json
+216965215a0a9715a3430c5245951adb5f3188d2d26edc60a731e82eb05baf22  ./reference/fidelity-bf16-dense.json
+f7c153b5683cf6b3dddbe61fc56f857403e9e647a6b1d6ae3bfaf1f57539252e  ./reference/fidelity-profile.json
+526d816b086afdc276a3d568af8675d4a27a54165ea5b915e89609df5e832853  ./reference/fidelity-source.json

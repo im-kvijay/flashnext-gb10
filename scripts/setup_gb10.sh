@@ -59,10 +59,11 @@ TOTAL_GIB=$(awk '/MemTotal/ {printf "%d", $2/1048576}' /proc/meminfo)
 AVAIL_GIB=$(awk '/MemAvailable/ {printf "%d", $2/1048576}' /proc/meminfo)
 echo "Memory: ${TOTAL_GIB} GiB total, ${AVAIL_GIB} GiB available now"
 ((TOTAL_GIB >= 115)) || die "the 8 x 200k profile needs a 128 GB GB10 (found ${TOTAL_GIB} GiB)"
-if ((AVAIL_GIB < 112)); then
-  echo "WARNING: only ${AVAIL_GIB} GiB available at idle. The 8 x 200k profile leaves about 7 GiB of headroom;"
-  echo "         stop other GPU/desktop workloads (e.g. sudo systemctl isolate multi-user.target) or run"
-  echo "         fewer agents (FLASHNEXT_SEQUENCES=6 FLASHNEXT_KV_BYTES=19730006016 in flashnext.local.env)."
+if ((AVAIL_GIB < 118)); then
+  echo "NOTE: ${AVAIL_GIB} GiB available now; the full 8 x 200k profile needs about 118 GiB available at start"
+  echo "      (it peaked at 111 GiB on the reference host, plus the 6 GiB safety floor). scripts/start.sh fits"
+  echo "      the budget automatically (smaller PLE cache, then smaller prefill chunks, then fewer agents)"
+  echo "      and prints what it changed. Stopping the desktop session or other GPU jobs frees memory."
 fi
 NEED_GB=$([[ -f $MODEL/verified-lfs.json ]] && echo 25 || echo 160)
 FREE_GB=$(df --output=avail -B1G "$DATA" | tail -1 | tr -d ' ')
@@ -130,6 +131,20 @@ fi
 
 step "Drafter"
 DRAFTER_DST=$DATA/drafter/mtp_trained.pt
+# A plain git clone carries the release files in assets/ (drafter split under GitHub's file size
+# limit, reference records gzipped); unpack them into release/, as in a release bundle.
+if [[ ! -f release/SHA256SUMS && -f assets/SHA256SUMS ]]; then
+  echo "Unpacking assets/ into release/"
+  mkdir -p release/drafter
+  cat assets/drafter/mtp_trained.pt.part* > release/drafter/mtp_trained.pt
+  cp assets/drafter/report.json release/drafter/
+  while IFS= read -r gz; do
+    dst=release/${gz#assets/}; dst=${dst%.gz}
+    mkdir -p "$(dirname "$dst")"
+    gunzip -c "$gz" > "$dst"
+  done < <(find assets/reference -name '*.json.gz')
+  cp assets/SHA256SUMS release/SHA256SUMS
+fi
 if [[ -f release/SHA256SUMS ]]; then
   (cd release && sha256sum --quiet -c SHA256SUMS) || die "release bundle files do not match release/SHA256SUMS"
   echo "Release bundle files verified"
@@ -177,9 +192,12 @@ cat flashnext.local.env
 step "Done"
 cat <<EOF
 Start the server (first start compiles kernels and takes about 20-30 minutes; later starts about 15):
-  bash scripts/start.sh
+  bash scripts/start.sh                 # foreground; or: bash scripts/start.sh --background && bash scripts/wait_ready.sh
 Then, from another shell, check it end to end:
   bash scripts/smoke_test.sh            # chat, tool call, 8 concurrent 4k agents
   bash scripts/smoke_test.sh --long     # + eight distinct 200k-token contexts (about 30 minutes)
+  bash scripts/verify_fidelity.sh       # numerics match the reference host
+  bash scripts/quality_check.sh         # about 2 hours: compared with the base model's results
+Stop it with bash scripts/stop.sh (or Ctrl-C in the foreground shell).
 OpenAI-compatible endpoint: http://127.0.0.1:8000/v1, model name "flashnext".
 EOF

@@ -8,25 +8,25 @@ NVIDIA's Qwen3.8-Flash-Next-NVFP4 checkpoint with the tuning measured in
 
 ## Quick start
 
-From a release bundle (includes the retrained drafter and reference records):
+From a plain `git clone` (the retrained drafter and the reference records ship
+in `assets/`; setup unpacks and checksum-verifies them). For an automated
+setup, hand an agent [`AGENTS.md`](../AGENTS.md): the same steps with success
+criteria.
 
 ```bash
-tar xzf flashnext-gb10-<commit>.tar.gz
-cd flashnext-gb10-<commit>
 bash scripts/setup_gb10.sh --data /path/on/nvme/flashnext   # 30-90 min, mostly the 124 GB download
-bash scripts/start.sh                                         # first start 20-30 min (kernel compiles), then ~15
-# in another shell:
+bash scripts/start.sh --background                            # first start 20-30 min (kernel compiles), then ~15
+bash scripts/wait_ready.sh                                    # returns when /health is 200
 bash scripts/smoke_test.sh                                    # chat, tool call, 8 agents at 4k
 bash scripts/verify_fidelity.sh                               # numerics match the reference host
 bash scripts/smoke_test.sh --long                             # 8 distinct 200k contexts
 bash scripts/quality_check.sh                                 # ~2 h: suite, tools, retrieval, everyday tasks vs base model
+bash scripts/stop.sh
 ```
 
-From a plain clone (no drafter file): the same commands work. The server then
-uses the checkpoint's own MTP drafter (identical outputs, lower throughput).
-Add `--build-drafter` to retrain it on this machine (2-4 hours of GPU time,
-`scripts/build_drafter.sh`). `verify_fidelity.sh` needs the bundle's
-reference records.
+A release bundle (`flashnext-gb10-<commit>.tar.gz`) works the same way after
+`tar xzf`. `--build-drafter` retrains the drafter on this machine instead
+(2-4 hours of GPU time, `scripts/build_drafter.sh`).
 
 The endpoint is `http://127.0.0.1:8000/v1`, model name `flashnext`. Tool
 calling uses the official Qwen XML parser (`--tool-call-parser qwen3_xml`)
@@ -59,7 +59,8 @@ verified against Hugging Face, then recorded in `DIR/verified-lfs.json`).
 | Script | Does |
 |---|---|
 | `scripts/setup_gb10.sh` | preflight (GPU, memory, disk, compiler), pinned runtime, plugin install and import check, checkpoint download plus SHA-256 verification, drafter install (bundle file, `--drafter FILE`, or `--build-drafter`), writes `flashnext.local.env`. Safe to re-run. |
-| `scripts/start.sh` | reads `profiles/gb10-8x200k.env`, then `flashnext.local.env`, then your exported variables; starts vLLM under `scripts/supervise.py`, which stops the server if host memory stays below the floor (6 GiB) instead of letting the machine lock up. Extra arguments go to `vllm serve` (e.g. `--api-key KEY`). |
+| `scripts/start.sh` | reads `profiles/gb10-8x200k.env`, then `flashnext.local.env`, then your exported variables; fits the memory budget to what is available (below); starts vLLM under `scripts/supervise.py`, which stops the server if host memory stays below the floor (6 GiB) instead of letting the machine lock up. `--background` detaches (PID in `results/server.pid`). Extra arguments go to `vllm serve` (e.g. `--api-key KEY`). |
+| `scripts/wait_ready.sh`, `scripts/stop.sh` | wait for `/health` (fails with the log tail if the server exits); stop this checkout's server only. |
 | `scripts/smoke_test.sh` | waits for `/health`, checks a chat answer and a tool call, runs eight concurrent 4k coding agents and prints throughput and draft acceptance; `--long` adds eight distinct 200k-token codebase contexts. |
 | `scripts/verify_fidelity.sh` | teacher-forced scoring of 16 sequences against the reference host's records: top-1 agreement and KL against the unquantized-dense reference and against the same profile on the reference host. |
 | `scripts/quality_check.sh` | everyday tasks (`bench/normal_tasks.py`), eight-agent multi-turn tool use, long-context retrieval and the task suite (LiveCodeBench v6, HumanEval, GSM8K, MMLU-Pro), compared item by item with the base model's results from the bundle; `--quick` skips the suite. |
@@ -95,10 +96,25 @@ served on identical requests differs as much as served vs an FP32 reference,
   to start a second one. Do not run other GPU jobs while serving.
 - **Memory floor.** If host available memory stays below
   `FLASHNEXT_MIN_AVAILABLE_GIB` (6), the supervisor stops the server
-  (exit 75) rather than risk an out-of-memory hang. With a desktop session or
-  other services using several GB, run fewer agents: set
-  `FLASHNEXT_SEQUENCES=6` and `FLASHNEXT_KV_BYTES=19730006016` in
-  `flashnext.local.env` (six agents at 212,992 tokens).
+  (exit 75) rather than risk an out-of-memory hang.
+- **Memory fit.** The profile peaked at 111 GiB on the reference host (118 GiB
+  available before start). With less available (desktop session, other
+  services), `start.sh` shrinks the budget in this order and prints what it
+  changed: PLE row cache 3 -> 1 GiB, 1,024-token prefill chunks, then one
+  agent fewer at a time (3.06 GiB of KV cache each). Outputs are unaffected.
+  Settings you export yourself are never changed; `FLASHNEXT_AUTO_FIT=0`
+  turns this off.
+- **Concurrency.** `FLASHNEXT_SEQUENCES` (8) is the maximum number of requests
+  decoded together, not a requirement: with six active agents the server runs
+  batches of six (CUDA graphs are captured for every batch size up to 8), and a
+  ninth request waits in the queue until a slot frees. The KV cache is
+  reserved at start either way, so running fewer agents does not free memory.
+  Each decode step mostly reads the same expert weights whatever the batch,
+  so fewer active agents means faster per-agent generation and lower
+  aggregate throughput. The idle share of the cache keeps earlier
+  conversations' prefixes, so resumed agents skip re-prefilling them.
+  Reserve less only when memory is short: `FLASHNEXT_SEQUENCES=6` and
+  `FLASHNEXT_KV_BYTES=19730006016` (six agents at 212,992 tokens).
 - **Prefix caching** is on: later turns of the same conversation reuse the
   cached prefix, so only new tokens are prefilled.
 - **Network access.** The server binds to 127.0.0.1. To serve other machines
@@ -106,7 +122,7 @@ served on identical requests differs as much as served vs an FP32 reference,
   `--api-key` to `start.sh`; there is no other authentication.
 - **Logs.** `results/serve-<time>.log` (server) and `.jsonl` (memory
   receipts, one per second).
-- **Stopping.** Ctrl-C in the `start.sh` shell, or `pkill -f supervise.py`.
+- **Stopping.** `bash scripts/stop.sh`, or Ctrl-C in a foreground `start.sh`.
 - **Restarts** take about 15 minutes (weight loading) plus graph capture;
   compiled kernels are cached under `$FLASHNEXT_DATA/cache`.
 
@@ -125,7 +141,7 @@ drafter; the drafter only proposes tokens, so it cannot change outputs.
 |---|---|
 | `setup_gb10.sh`: vLLM version mismatch | expected: a separate `.venv` is created; `--reuse-vllm` only accepts the exact pinned build |
 | download stops | re-run `setup_gb10.sh`; downloads resume; `HF_TOKEN` if Hugging Face asks for login |
-| server exits with 75 | memory floor tripped: stop other workloads or run six agents (above) |
+| server exits with 75 | memory floor tripped: stop other workloads and restart (the start fits fewer agents if needed) |
 | `Direct PLE lookup needs a C compiler` | `sudo apt install build-essential` |
 | first start very slow | Triton/FlashInfer compile on first start; cached afterwards |
 | `smoke_test.sh` tool call missing | check the server log for parser errors; the chat template must be the checkpoint's own |

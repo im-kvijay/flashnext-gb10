@@ -1,8 +1,11 @@
 # Flash Next on GB10
 
-**Set up a new GB10:** `bash scripts/setup_gb10.sh`, then `bash scripts/start.sh`.
-The step-by-step guide, requirements, expected numbers and troubleshooting are
-in [`docs/setup-gb10.md`](docs/setup-gb10.md).
+**Set up a new GB10:** clone this repository, then `bash scripts/setup_gb10.sh`
+and `bash scripts/start.sh`. Everything ships in the clone (the retrained
+drafter and reference records are in `assets/`). For a setup by a coding
+agent, point it at [`AGENTS.md`](AGENTS.md), a step-by-step runbook with
+success criteria. The guide, requirements, expected numbers and
+troubleshooting are in [`docs/setup-gb10.md`](docs/setup-gb10.md).
 
 **Status: released and validated** ([`v0.1-gb10`](https://github.com/im-kvijay/flashnext-gb10/releases/tag/v0.1-gb10)).
 Eight concurrent agents with 212,992 tokens of context each on one GB10, NVIDIA's
