@@ -16,7 +16,8 @@ release bundle with `scripts/setup_gb10.sh` and started with
 | HumanEval (40) | 37 | 37 (0 flips) |
 | GSM8K (20) | 20 | 20 |
 | MMLU-Pro (28) | 22 | 21 (2 lost, 1 gained) |
-| LiveCodeBench v6 (30), 16k-token budget | 12 | 9 (5 lost, 2 gained) |
+| LiveCodeBench v6 (30), 16k-token budget | 12 | 9 (5 lost, 2 gained; all 5 cut off at the budget) |
+| LiveCodeBench v6 (30), 32k-token budget | 13 | 14 (4 gained, 3 lost) |
 | Fidelity vs unquantized dense, coding-agent text: top-1 / KL | 94.6% / 0.022 | 96.6% / 0.007 |
 | Fidelity vs unquantized dense, raw source: top-1 / KL | 81.7% / 0.32 | 86.5% / 0.21 |
 
@@ -31,8 +32,12 @@ item both runs finished was correct in both. Scores ranged from 7 to 12 of 30
 and configurations differed by 2 to 7 items; the base differs from every other
 configuration by 6 or 7. All five of the recipe's lost items were cut off at
 16,384 tokens (the base finished them in 9,400-14,000). HumanEval (37/40) and
-GSM8K (20/20) are identical in all six runs; MMLU-Pro ranges 21-24. A
-32k-token LiveCodeBench comparison, where most answers can finish, is below.
+GSM8K (20/20) are identical in all six runs; MMLU-Pro ranges 21-24. With a
+32,768-token budget (`lcb32-base`, `lcb32-profile`; the shipped profile with
+2,048-token chunks and the retrained drafter), the same 30 LiveCodeBench v6
+problems score 13/30 on the base model and 14/30 on the profile: 4 gained, 3
+lost, 718k vs 713k completion tokens, 17 vs 15 answers still at the budget.
+The profile finished the run in 5,360 s against 7,400 s for stock serving.
 
 The shipped profile uses 2,048-token prefill chunks (the table above was
 measured with 4,096). Its 8 x 200k run (`final2-8x200k`) re-checked fidelity

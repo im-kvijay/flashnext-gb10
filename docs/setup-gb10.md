@@ -79,7 +79,7 @@ Measured on a rented GB10 whose model storage sits behind a loop device
 | Lowest host memory available during the 8 x 200k run | 6.8 GiB (floor 6 GiB) |
 | KV capacity | 1,652,167 tokens (7.76 x 212,992); 8 x 200k fit |
 | Fidelity vs unquantized dense (BF16 KV) | coding-agent continuations: top-1 96.5%, KL 0.007; raw source code: 85.8%, KL 0.22 (stock vLLM: 94.6% / 0.022 and 81.7% / 0.32) |
-| Quality vs the base model | see `docs/validation.md`: everyday tasks 24/24 both, tools 8/8 both, retrieval 12/12 vs 10/12, HumanEval and GSM8K identical |
+| Quality vs the base model | see `docs/validation.md`: everyday tasks 24/24 both, tools 8/8 both, retrieval 12/12 vs 10/12, HumanEval and GSM8K identical, LiveCodeBench (32k tokens) 14/30 vs 13/30 |
 
 No activations are quantized. Routed experts keep NVIDIA's NVFP4 weights with
 BF16 activations (Marlin W4A16); the GDN/QSA projections use FP8 weights with
