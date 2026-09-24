@@ -475,3 +475,25 @@ together (107.8 s overlap), accepted length 2.73, no errors or degenerate
 streams, host memory at least 6.82 GiB. Same server: fidelity 96.5% / 0.0071
 (workload) and 85.8% / 0.219 (codebase) against `m1-marlin`, everyday tasks
 24/24.
+
+## GDN replay, fixed (September 24)
+
+`gdn-debug3` (eager, `FLASHNEXT_GDN_REPLAY_DEBUG=1`) showed valid replay
+records on all but 3 of about 3,000 steps and no slot changes, yet streams
+still collapsed at 4,990-4,991 tokens, just before the 4,992-token block
+boundary. The pinned vLLM serves with the V2 model runner, whose align-mode
+copies run in `MambaHybridModelState.postprocess_state` and `preprocess_state`,
+not the V1 runner method the conversion was hooked to. With the conversion also
+run before those (`ab-gdn3`, `gdn-8x200k`, retrained drafter):
+
+| Run | Result |
+|---|---|
+| 4k workload / repeat | 132.2 / 145.7 tok/s (121.3 / 128.3 without), accepted 2.45 / 2.55 |
+| 4k retrieval / throughput | 202.6 / 194.2 tok/s |
+| 8 x 200k | 131.8 tok/s at accepted length 2.66 (161 ms per step; 167 ms without replay at 2.73) |
+| Degenerate streams | 0 in all five runs |
+| Retention / tools | 11/12, 8/8 |
+| Kernel checks (reference and vLLM op, with conversion and block move) | pass, worst error 3e-3 |
+
+Retraining the drafter's experts as well (`--train-experts`, 2.6B trainable
+parameters) ran out of memory on the GB10 and was dropped.
